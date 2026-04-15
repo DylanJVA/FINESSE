@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "finesse"
+version = "0.1.0"
+description = "FINESSE: Fidelity-INtegrated Equivalence-aware Swap Selection and Execution"
+requires-python = ">=3.10"
+dependencies = [
+    "qiskit>=2.0",
+    "numpy>=1.26",
+    "cirq-core>=1.4",
+    "pandas>=2.0",
+]
+
+[project.optional-dependencies]
+notebooks = [
+    "jupyter",
+    "matplotlib",
+]
+mqt = [
+    "mqt-bench>=1.0",
+]
+
+[project.scripts]
+finesse-download  = "scripts.download_circuits:main"
+finesse-redqueen  = "scripts.run_redqueen:main"
+finesse-bench     = "scripts.run_ablation:main"
+
+[tool.setuptools.packages.find]
+include = ["finesse*", "scripts*"]
