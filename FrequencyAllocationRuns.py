@@ -73,19 +73,28 @@ def build_stress_circuits():
         ("ghz_state_n23",  fetch_qasmbench("ghz_state_n23",  size="medium")),  # 23q, 22 2Q
     ]
 
-# ── Toronto topology ──────────────────────────────────────────────────────────
-def build_toronto_topology():
-    """Build coupling map + fidelity matrix from FakeTorontoV2 calibration data."""
-    from qiskit_ibm_runtime.fake_provider import FakeTorontoV2
-    backend = FakeTorontoV2()
+# ── IBM fake topologies ───────────────────────────────────────────────────────
+def _ibm_topology(backend_name: str):
+    from qiskit_ibm_runtime.fake_provider import FakeProviderForBackendV2
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        backends = {b.name: b for b in FakeProviderForBackendV2().backends()}
+        backend = backends[backend_name]
     cm = backend.coupling_map
     n  = backend.num_qubits
     F  = np.zeros((n, n))
-    for qargs, props in backend.target['cx'].items():
+    gate = 'cx' if 'cx' in backend.target.operation_names else 'cz'
+    for qargs, props in backend.target[gate].items():
         if props is not None and props.error is not None:
             i, j = qargs
             F[i, j] = F[j, i] = 1.0 - props.error
-    return [("fake_toronto_v2", cm, F)]
+    return (backend_name, cm, F)
+
+def build_ibm_topologies():
+    """Three IBM backends: 33q Prague (CZ), 65q Brooklyn (CX), 127q Washington (CX)."""
+    return [_ibm_topology(name) for name in
+            ("fake_prague", "fake_brooklyn", "fake_washington")]
 
 
 # ── Topology ──────────────────────────────────────────────────────────────────
@@ -217,7 +226,7 @@ def make_qaoa(n_qubits, p_layers):
     return qc
 
 # ── Benchmark runner ──────────────────────────────────────────────────────────
-def run_circuits(circuit_list, seed_list, label, out_path=None, wraparound=False, basis_gate='sqrt_iswap'):
+def run_circuits(circuit_list, seed_list, label, out_path=None, wraparound=False, basis_gate='sqrt_iswap', devices=None):
     """
     circuit_list: list of (name, QuantumCircuit | qasm_filename_str)
     seed_list:    list of integer seeds to run (e.g. [0] for a single-seed parallel job)
@@ -378,10 +387,10 @@ if __name__ == "__main__":
         import sys; sys.exit(0)
 
     if args.toronto:
-        toronto_circuits = build_paper_circuits()
+        all_circuits = build_paper_circuits()
         if args.circuit:
-            toronto_circuits = [(n, c) for n, c in toronto_circuits if n == args.circuit]
-            if not toronto_circuits:
+            all_circuits = [(n, c) for n, c in all_circuits if n == args.circuit]
+            if not all_circuits:
                 parser.error(f"Circuit '{args.circuit}' not in paper suite. "
                              f"Options: {[n for n,_ in build_paper_circuits()]}")
         n_seeds = args.seeds if args.seeds is not None else 20
@@ -389,12 +398,15 @@ if __name__ == "__main__":
         out_path = f"{args.output}.csv" if args.output else (
             f"Results/toronto_s{args.seed}.csv" if args.seed is not None else "Results/toronto.csv"
         )
-        devices = build_toronto_topology()
-        print(f"=== TORONTO ({len(toronto_circuits)} circuits, seeds={seed_list}) ===")
-        run_circuits(toronto_circuits, seed_list=seed_list, label="toronto",
-                     out_path=out_path, wraparound=False, basis_gate='cx')
+        for backend_name, cm, F in build_ibm_topologies():
+            n_phys = cm.size()
+            circuits = [(name, qc) for name, qc in all_circuits if qc.num_qubits <= n_phys]
+            print(f"=== IBM {backend_name} ({n_phys}q, {len(circuits)} circuits, seeds={seed_list}) ===")
+            run_circuits(circuits, seed_list=seed_list, label="toronto",
+                         out_path=out_path, wraparound=False, basis_gate='cx',
+                         devices=[(backend_name, cm, F)])
         df = pd.read_csv(out_path)
-        ran = {n for n, _ in toronto_circuits}
+        ran = {n for n, _ in all_circuits}
         df = df[df["circuit"].isin(ran)]
         print(df.groupby(["device", "config"])[["swaps", "lf_cost"]].mean().round(2))
         import sys; sys.exit(0)
@@ -415,11 +427,11 @@ if __name__ == "__main__":
             default_out = "Results/paper.csv"
         out_path = f"{args.output}.csv" if args.output else default_out
         for wrap in [False, True]:
-            devices = build_topology(wraparound=wrap)
+            devs = build_topology(wraparound=wrap)
             tag = "wrap" if wrap else "no-wrap"
             print(f"=== PAPER ({len(paper_circuits)} circuits, seeds={seed_list}, {tag}) ===")
             run_circuits(paper_circuits, seed_list=seed_list, label="paper",
-                         out_path=out_path, wraparound=wrap)
+                         out_path=out_path, wraparound=wrap, devices=devs)
         df = pd.read_csv(out_path)
         ran = {n for n, _ in paper_circuits}
         df = df[df["circuit"].isin(ran)]
@@ -442,11 +454,11 @@ if __name__ == "__main__":
             default_out = "Results/stress.csv"
         out_path = f"{args.output}.csv" if args.output else default_out
         for wrap in [False, True]:
-            devices = build_topology(wraparound=wrap)
+            devs = build_topology(wraparound=wrap)
             tag = "wrap" if wrap else "no-wrap"
             print(f"=== STRESS ({len(stress_circuits)} circuits, seeds={seed_list}, {tag}) ===")
             run_circuits(stress_circuits, seed_list=seed_list, label="stress",
-                         out_path=out_path, wraparound=wrap)
+                         out_path=out_path, wraparound=wrap, devices=devs)
         import pandas as pd
         df = pd.read_csv(out_path)
         ran = {n for n, _ in stress_circuits}
@@ -455,8 +467,7 @@ if __name__ == "__main__":
         import sys; sys.exit(0)
 
     if args.quick:
-        all_devices = build_topology(wraparound=args.wraparound)
-        devices = all_devices
+        devs = build_topology(wraparound=args.wraparound)
         quick_circuits = [
             ("adder_n10",      fetch_qasmbench("adder_n10",      size="small")),
             ("multiplier_n15", fetch_qasmbench("multiplier_n15", size="medium")),
@@ -464,13 +475,13 @@ if __name__ == "__main__":
         ]
         print(f"=== QUICK CHECK (3 circuits, 3 seeds{', wraparound' if args.wraparound else ''}) ===")
         quick_out = f"{args.output}.csv" if args.output else "quick_check.csv"
-        df = run_circuits(quick_circuits, n_seeds=3, label="quick", out_path=quick_out, wraparound=args.wraparound)
+        df = run_circuits(quick_circuits, seed_list=list(range(3)), label="quick",
+                          out_path=quick_out, wraparound=args.wraparound, devices=devs)
         print(df.groupby(["device","config"])[["swaps","lf_cost"]].mean().round(2))
         import sys; sys.exit(0)
 
     if args.medium:
-        all_devices = build_topology(wraparound=args.wraparound)
-        devices = all_devices
+        devs = build_topology(wraparound=args.wraparound)
         medium_circuits = [
             ("adder_n10",      fetch_qasmbench("adder_n10",      size="small")),
             ("multiplier_n15", fetch_qasmbench("multiplier_n15", size="medium")),
@@ -481,7 +492,8 @@ if __name__ == "__main__":
         ]
         print(f"=== MEDIUM CHECK (6 circuits, 3 seeds{', wraparound' if args.wraparound else ''}) ===")
         medium_out = f"{args.output}.csv" if args.output else "medium_check.csv"
-        df = run_circuits(medium_circuits, n_seeds=3, label="medium", out_path=medium_out, wraparound=args.wraparound)
+        df = run_circuits(medium_circuits, seed_list=list(range(3)), label="medium",
+                          out_path=medium_out, wraparound=args.wraparound, devices=devs)
         print(df.groupby(["device","config"])[["swaps","lf_cost"]].mean().round(2))
         import sys; sys.exit(0)
 
@@ -492,15 +504,15 @@ if __name__ == "__main__":
 
     all_devices = build_topology(wraparound=args.wraparound)
     if args.topology == "all":
-        devices = all_devices
+        devs = all_devices
     else:
         requested = {t.strip() for t in args.topology.split(",")}
-        devices = [(name, cm, F) for name, cm, F in all_devices if name in requested]
-        if not devices:
+        devs = [(name, cm, F) for name, cm, F in all_devices if name in requested]
+        if not devs:
             parser.error(f"No matching topologies found. Available: {[d[0] for d in all_devices]}")
     if args.wraparound:
         print("Topology: wraparound enabled")
-    print(f"Running on topologies: {[d[0] for d in devices]}")
+    print(f"Running on topologies: {[d[0] for d in devs]}")
 
     suites = {
         "redqueen":  (redqueen_circuits, 20),
@@ -524,5 +536,6 @@ if __name__ == "__main__":
         else:
             print(f"=== {name} (n_seeds={n_seeds}{', wraparound' if args.wraparound else ''}) ===")
         out_path = f"{args.output}.csv" if args.output else None
-        df = run_circuits(circuits_for_suite, n_seeds=n_seeds, label=name, out_path=out_path, wraparound=args.wraparound)
+        df = run_circuits(circuits_for_suite, seed_list=list(range(n_seeds)), label=name,
+                          out_path=out_path, wraparound=args.wraparound, devices=devs)
         print(df.groupby(["device","config"])[["swaps","depth","lf_cost"]].mean().round(2))
