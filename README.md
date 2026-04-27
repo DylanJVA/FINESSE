@@ -8,7 +8,7 @@ Fidelity-aware quantum circuit transpilation for SNAIL-based superconducting arc
 git clone git@github.com:DylanJVA/MirageFidelities.git
 cd MirageFidelities
 python -m venv .venv && source .venv/bin/activate
-pip install -e ".[mqt]"
+pip install -e .
 mkdir -p Results logs
 ```
 

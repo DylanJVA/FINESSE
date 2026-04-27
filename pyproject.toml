@@ -12,15 +12,13 @@ dependencies = [
     "numpy>=1.26",
     "cirq-core>=1.4",
     "pandas>=2.0",
+    "mqt-bench>=1.0",
 ]
 
 [project.optional-dependencies]
 notebooks = [
     "jupyter",
     "matplotlib",
-]
-mqt = [
-    "mqt-bench>=1.0",
 ]
 
 [tool.setuptools.packages.find]
