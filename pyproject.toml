@@ -23,10 +23,5 @@ mqt = [
     "mqt-bench>=1.0",
 ]
 
-[project.scripts]
-finesse-download  = "scripts.download_circuits:main"
-finesse-redqueen  = "scripts.run_redqueen:main"
-finesse-bench     = "scripts.run_ablation:main"
-
 [tool.setuptools.packages.find]
-include = ["finesse*", "scripts*"]
+include = ["finesse*"]

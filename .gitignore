@@ -1,0 +1,32 @@
+circuits/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+*.egg-info/
+build/
+dist/
+.venv/
+
+# Results and data
+Results/
+*.csv
+*.npy
+*.parquet
+
+# Notebooks (keep only PaperPlots.ipynb)
+*.ipynb
+!PaperPlots.ipynb
+
+# Figures (generated at runtime)
+figures/
+
+# Windows artifacts
+*.Zone.Identifier
+~$*
+
+# Misc
+*.pdf
+*.pptx
+*.zip
+*.xlsx
+notebook_outputs/

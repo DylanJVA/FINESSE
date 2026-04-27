@@ -687,18 +687,30 @@ def evaluate_routing_checks(
             results["clifford"] = None
             messages.append(f"SKIP clifford (error: {e})")
 
-    # Statevector equivalence for small enough circuits
+    # Statevector equivalence for small enough circuits — 8 Haar-random inputs.
+    # Evolving from |0⟩ only is insufficient: permutation errors on all-CNOT
+    # circuits are invisible since |00...0⟩ is a fixed point of qubit permutations.
     if run_statevector:
         if n > sv_max_qubits:
             messages.append(f"SKIP statevector ({n} qubits > {sv_max_qubits})")
         else:
             from qiskit.quantum_info import Statevector as _SV
-            if not _SV(corrected).equiv(_SV(ref_bare)):
+            rng_sv = np.random.default_rng(42)
+            sv_ok = True
+            for _ in range(8):
+                raw = rng_sv.standard_normal(2**n) + 1j * rng_sv.standard_normal(2**n)
+                raw /= np.linalg.norm(raw)
+                sv_ref  = _SV(raw).evolve(ref_bare)
+                sv_rout = _SV(raw).evolve(corrected)
+                if abs(sv_ref.inner(sv_rout)) < 1.0 - 1e-8:
+                    sv_ok = False
+                    break
+            if not sv_ok:
                 results["statevector"] = False
                 messages.append("FAIL statevector mismatch")
             else:
                 results["statevector"] = True
-                messages.append("OK   statevector")
+                messages.append("OK   statevector (8 Haar-random inputs)")
 
     # Unitary equivalence for small enough circuits
     if run_unitary:

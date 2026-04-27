@@ -141,11 +141,35 @@ def _build_dist_fid(coupling_map: CouplingMap, L_raw: np.ndarray) -> np.ndarray:
     return d
 
 
-def _dijkstra_path(coupling_map: CouplingMap, src: int, dst: int) -> list[int]:
-    """Shortest path from src to dst on the undirected coupling map."""
+def _dijkstra_path(coupling_map: CouplingMap, src: int, dst: int,
+                   L_raw: np.ndarray | None = None) -> list[int]:
+    """Shortest path from src to dst.
+
+    If L_raw is provided uses fidelity-weighted edges (same weights as D_fid),
+    otherwise falls back to hop-count (unit weights).
+    """
     n = coupling_map.size()
-    adj = _build_adj(coupling_map, n)
-    _, prev = _dijkstra(adj, src)
+    # Build weighted adjacency list once
+    adj_w: list[list[tuple[int, float]]] = [[] for _ in range(n)]
+    for a, b in coupling_map.get_edges():
+        w = DIST_FID_SWAP_WEIGHT * float(L_raw[a, b]) if L_raw is not None else 1.0
+        adj_w[a].append((b, w))
+        adj_w[b].append((a, w))
+
+    cost = [float('inf')] * n
+    prev = [-1] * n
+    cost[src] = 0.0
+    heap = [(0.0, src)]
+    while heap:
+        c, u = heapq.heappop(heap)
+        if c > cost[u]:
+            continue
+        for v, w in adj_w[u]:
+            nc = cost[u] + w
+            if nc < cost[v]:
+                cost[v] = nc
+                prev[v] = u
+                heapq.heappush(heap, (nc, v))
     path = []
     u = dst
     while u != -1:
@@ -578,32 +602,42 @@ def route(
 
                     if aggression > 0:
                         gp0, gp1 = gps
-                        stuck = [
+                        # Use ALL other ready 2Q gates (not just non-adjacent ones).
+                        # A mirror absorption implicitly swaps (gp0, gp1), which can
+                        # un-adjacent a currently-ready gate that shares a qubit — a cost
+                        # invisible if we only score stuck (non-adjacent) gates.
+                        other_f = [
                             sid for sid in ready if sid != nid
                             and len(nodes[sid].qargs) == 2
-                            and cur_phys_of(nodes[sid])[0]
-                                not in adj[cur_phys_of(nodes[sid])[1]]
                         ]
-                        E_stuck = extended_set(stuck)
+                        # Include successors of G itself in the extended set.
+                        # An implicit SWAP changes positions of (gp0, gp1), so only
+                        # G's successors see a routing-distance change.  Other front-
+                        # layer gates cannot share qubits with G (qubit exclusivity),
+                        # so their distances are unaffected by the swap.  Without G's
+                        # successors in E, H_perm == H_cur always and mirror never fires.
+                        E_mirror = extended_set(other_f + [nid])
 
                         if dist_fid is not None and fidelity_mirror:
                             # Fidelity-aware: compare k_U*lf + H_fid(cur) vs k_U'*lf + H_fid(perm).
-                            #   k_U  = decomp cost of U  (native gates)
-                            #   k_U' = decomp cost of U' = SWAP·U
+                            #   k_U/k_U' use the native basis_gate decomp cost (Weyl-chamber,
+                            #   basis-independent). On sqrt_iswap hardware, k_CX = k_{SWAP·CX} = 2,
+                            #   so the criterion is H_perm ≤ H_cur (accept when routing doesn't worsen).
+                            #   On CX hardware, k_CX=1 and k_{SWAP·CX}=2: accept when H_perm ≤ H_cur-lf.
                             #   lf   = -log F[gp0, gp1]  (raw, same units as dist_fid)
-                            # H_fid uses D_fid (lf-weighted Dijkstra paths) over stuck
+                            # H_fid uses D_fid (lf-weighted Dijkstra paths) over all other
                             # front-layer gates — the same H as SWAP selection.
                             try:
                                 U_mat      = Operator(node.op).data
                                 U_mir_mat  = SWAP_MATRIX @ U_mat
-                                k_U        = float(decomp_cost(U_mat,     basis_gate))
-                                k_Up       = float(decomp_cost(U_mir_mat, basis_gate))
+                                k_U        = float(decomp_cost(U_mat,      basis_gate))
+                                k_Up       = float(decomp_cost(U_mir_mat,  basis_gate))
                                 lf_gate    = float(L_raw[gp0, gp1])
-                                H_cur      = _h_finesse_sum(stuck, E_stuck)
-                                swap_positions(gp0, gp1) #fake a mirror
-                                H_perm     = _h_finesse_sum(stuck, E_stuck) #lookahead with fake mirror applied
-                                swap_positions(gp0, gp1) #undo fake mirror  
-                                cost_U     = k_U  * lf_gate + H_cur 
+                                H_cur      = _h_finesse_sum(other_f, E_mirror)
+                                swap_positions(gp0, gp1)
+                                H_perm     = _h_finesse_sum(other_f, E_mirror)
+                                swap_positions(gp0, gp1)  # undo
+                                cost_U     = k_U  * lf_gate + H_cur
                                 cost_Up    = k_Up * lf_gate + H_perm
                                 if accept_mirror(cost_U, cost_Up, aggression):
                                     mirrored = True
@@ -611,32 +645,36 @@ def route(
                             except Exception:
                                 pass
                         else:
-                            # Hop-count: compare layout scores H(cur) vs H(perm).
-                            # Same metric as SWAP selection; mirrors when the
-                            # implicit SWAP improves the routing outlook.
+                            # Hop-count: compare k_U + H(cur) vs k_U' + H(perm).
+                            # Uses native basis_gate decomp cost (Weyl-chamber, basis-independent).
+                            # On sqrt_iswap: k_CX = k_{SWAP·CX} = 2 → accept when H_perm ≤ H_cur.
+                            # On CX:         k_CX=1, k_{SWAP·CX}=2 → accept when H_perm ≤ H_cur - 1.
                             def _layout_score() -> float:
                                 F_sum = sum(
                                     dist[cur_phys_of(nodes[s])[0]][cur_phys_of(nodes[s])[1]]
-                                    for s in stuck
+                                    for s in other_f
                                 )
                                 E_sum = (
                                     sum(dist[cur_phys_of(nodes[s])[0]][cur_phys_of(nodes[s])[1]]
-                                        for s in E_stuck) / len(E_stuck)
-                                    if E_stuck else 0.0
+                                        for s in E_mirror) / len(E_mirror)
+                                    if E_mirror else 0.0
                                 )
                                 return F_sum + EXTENDED_SET_WEIGHT * E_sum
 
-                            score_cur = _layout_score()
-                            swap_positions(gp0, gp1)
-                            score_perm = _layout_score()
-                            swap_positions(gp0, gp1)             # undo
-                            if accept_mirror(score_cur, score_perm, aggression):
-                                try:
-                                    U_mat = Operator(node.op).data
-                                    U_mirror = SWAP_MATRIX @ U_mat
+                            try:
+                                U_mat     = Operator(node.op).data
+                                U_mir_mat = SWAP_MATRIX @ U_mat
+                                k_U       = float(decomp_cost(U_mat,      basis_gate))
+                                k_Up      = float(decomp_cost(U_mir_mat,  basis_gate))
+                                score_cur  = k_U  + _layout_score()
+                                swap_positions(gp0, gp1)
+                                score_perm = k_Up + _layout_score()
+                                swap_positions(gp0, gp1)          # undo
+                                if accept_mirror(score_cur, score_perm, aggression):
+                                    U_mirror = U_mir_mat
                                     mirrored = True
-                                except Exception:
-                                    pass
+                            except Exception:
+                                pass
 
                     if mirrored and U_mirror is not None:
                         emit(UnitaryGate(U_mirror, check_input=False),
@@ -717,12 +755,9 @@ def route(
         # SABRE normalises the basic term by |F|; LightSABRE does not.
         basic = (F_sum / len(F)) if mode == 'sabre' else F_sum
         decay_factor = float(max(decay[p0], decay[p1])) if use_decay else 1.0
-        H_dist = decay_factor * (basic + W * (E_sum / len(E) if E else 0.0))
-
-        # Optional: penalise the SWAP's own edge quality.
-        # Requires careful tuning — without decay this can cause cycling on noisy devices.
-        if dist_fid is not None and edge_cost_weight > 0.0:
-            H_dist += edge_cost_weight * DIST_FID_SWAP_WEIGHT * float(L_raw[p0, p1])
+        edge_penalty = (edge_cost_weight * DIST_FID_SWAP_WEIGHT * float(L_raw[p0, p1])
+                        if dist_fid is not None and edge_cost_weight > 0.0 else 0.0)
+        H_dist = decay_factor * (basic + W * (E_sum / len(E) if E else 0.0) + edge_penalty)
 
         swap_positions(p0, p1)  # undo simulation
         return H_dist
@@ -781,9 +816,10 @@ def route(
             swap_history.clear()
             valve_fires += 1
 
-            best_nid = min(F,key=lambda nid: dist[cur_phys_of(nodes[nid])[0]][cur_phys_of(nodes[nid])[1]])
+            _vdist = dist_fid if dist_fid is not None else dist
+            best_nid = min(F, key=lambda nid: _vdist[cur_phys_of(nodes[nid])[0]][cur_phys_of(nodes[nid])[1]])
             bp0, bp1 = cur_phys_of(nodes[best_nid])
-            path = _dijkstra_path(coupling_map, bp0, bp1)
+            path = _dijkstra_path(coupling_map, bp0, bp1, L_raw=L_raw)
             mid = len(path) // 2
             for i in range(mid - 1):
                 pa, pb = path[i], path[i + 1]
