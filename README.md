@@ -89,7 +89,7 @@ routed_dag, n_swaps, final_layout = route(
 
 ## Running in parallel on a server
 
-For large runs, each seed can be dispatched independently and merged afterward. `run_parallel.sh` handles this automatically (arguments: mode, seeds, parallel jobs):
+For large runs, each seed can be dispatched independently and merged afterward. `run_parallel.sh <mode> <seeds> <jobs>` wraps the `--<mode>` flag from above — so `paper` corresponds to `--paper`, `toronto` to `--toronto`, etc.:
 
 ```bash
 nohup ./run_parallel.sh paper 20 $(nproc) > logs/master.log 2>&1 &
