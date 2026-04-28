@@ -170,7 +170,7 @@ def build_topology(wraparound=False):
         for edge in pentagon:
             print(edge[0],edge[1],pentagon[edge],end="\t")
             print(module[edge[0]],module[edge[1]],pentagon[edge])
-            F_pent[module[edge[0]],module[edge[1]]]=F_pent[module[edge[1]],module[edge[0]]]
+            F_pent[module[edge[0]],module[edge[1]]]=pentagon[(edge[0],edge[1])]
     if wraparound:
         #todo
         pass
