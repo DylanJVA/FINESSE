@@ -156,45 +156,34 @@ def build_topology(wraparound=False):
     # DOWN is a true left-right mirror of UP.
     # Top row: period-4 [.960, .962, .962, .960] so each module gets one of each.
     # Bottom row: within-module = .968, inter-module junction = .962.
-    n_pent = 36
-    F_pentagon = np.zeros((n_pent, n_pent))
+    F_pent=np.zeros((n,n))
+    pentagon = {(0,1):.989,(1,0):.989,#left roof
+                (3,4):.98,(4,3):.98,#base
+                (1,2):.973,(2,1):.973,#right roof
+                (0,3):.968,(3,0):.968,#left wall
+                (2,4):.962,(4,2):.962,#right wall
+                (1,3):.968,(3,1):.968,#left diagonal
+                (1,4):.96,(4,1):.96} #right diagonal
+    modules = [0,1,2,16,17],[19,18,17,3,2],[3,4,5,19,20],[22,21,20,6,5],[6,7,8,22,23],[25,24,23,9,8],[9,10,11,25,26],[28,27,26,12,11],[12,13,14,28,29],[31,30,29,15,14]
 
-    top_fid = [.960, .962, .962, .960]
-    for i in range(17):
-        F_pentagon[i, i+1] = F_pentagon[i+1, i] = top_fid[i % 4]
-
-    for i in range(18, 35):
-        F_pentagon[i, i+1] = F_pentagon[i+1, i] = .968 if (i - 18) % 2 == 0 else .962
-
-    up_mods   = [(0,1,2,18,19),(4,5,6,22,23),(8,9,10,26,27),(12,13,14,30,31),(16,17,-1,34,35)]
-    down_mods = [(2,3,4,20,21),(6,7,8,24,25),(10,11,12,28,29),(14,15,16,32,33)]
-
-    for tL, apex, tR, fL, fR in up_mods:
-        F_pentagon[tL,fL] = F_pentagon[fL,tL] = .989
-        F_pentagon[apex,fL] = F_pentagon[fL,apex] = .980
-        F_pentagon[apex,fR] = F_pentagon[fR,apex] = .973
-        if tR >= 0:
-            F_pentagon[tR,fR] = F_pentagon[fR,tR] = .968
-    for tL, apex, tR, fL, fR in down_mods:
-        F_pentagon[tL,fL] = F_pentagon[fL,tL] = .968
-        F_pentagon[apex,fL] = F_pentagon[fL,apex] = .973
-        F_pentagon[apex,fR] = F_pentagon[fR,apex] = .980
-        F_pentagon[tR,fR] = F_pentagon[fR,tR] = .989
-
+    for module in modules:
+        for edge in pentagon:
+            print(edge[0],edge[1],pentagon[edge],end="\t")
+            print(module[edge[0]],module[edge[1]],pentagon[edge])
+            F_pent[module[edge[0]],module[edge[1]]]=F_pent[module[edge[1]],module[edge[0]]]
     if wraparound:
-        F_pentagon[17,  0] = F_pentagon[ 0, 17] = .962   # apex-tR of last UP (ring close)
-        F_pentagon[ 0, 35] = F_pentagon[35,  0] = .968   # tR-fR of last UP (ring close)
-        F_pentagon[35, 18] = F_pentagon[18, 35] = .962   # bottom junction ring close
+        #todo
+        pass
 
     cm_ring = CouplingMap([[i,j] for i in range(n) for j in range(n) if F_ring[i,j]      > 0])
     cm_diag = CouplingMap([[i,j] for i in range(n) for j in range(n) if F_diag[i,j]      > 0])
     cm_full = CouplingMap([[i,j] for i in range(n) for j in range(n) if F_full[i,j]      > 0])
-    cm_pentagon = CouplingMap([[i,j] for i in range(n_pent) for j in range(n_pent) if F_pentagon[i,j] > 0])
+    cm_pent = CouplingMap([[i,j] for i in range(n) for j in range(n) if F_pent[i,j]      > 0])
     return [
         ("square_ring",      cm_ring, F_ring),
         ("square_ring_diag", cm_diag, F_diag),
         ("square_ring_full", cm_full, F_full),
-        ("pentagon_ring",    cm_pentagon, F_pentagon)
+        ("pentagon_ring",    cm_pent, F_pent)
     ]
 
 # ── Configs ───────────────────────────────────────────────────────────────────
