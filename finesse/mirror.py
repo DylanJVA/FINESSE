@@ -13,7 +13,7 @@ from __future__ import annotations
 import warnings
 
 import numpy as np
-from qiskit.circuit.library import iSwapGate, CXGate, SwapGate
+from qiskit.circuit.library import iSwapGate, CXGate
 from qiskit.quantum_info import Operator
 from qiskit.synthesis import TwoQubitBasisDecomposer
 from qiskit.synthesis.two_qubit.two_qubit_decompose import TwoQubitWeylDecomposition
@@ -91,7 +91,7 @@ def circuit_lf_cost(routed_dag, F: np.ndarray,
                     basis_gate: str = 'sqrt_iswap') -> float:
     """
     Total -log-fidelity cost of a routed DAG.
-    SWAPs: 3 * (-log F[p0,p1]).  Other 2Q gates: decomp_cost * (-log F[p0,p1]).
+    Each 2Q gate contributes decomp_cost(U, basis_gate) * (-log F[p0,p1]).
     """
     L = -np.log(np.maximum(F, 1e-10))
     total = 0.0
@@ -101,14 +101,11 @@ def circuit_lf_cost(routed_dag, F: np.ndarray,
         p0 = routed_dag.find_bit(node.qargs[0]).index
         p1 = routed_dag.find_bit(node.qargs[1]).index
         lf = float(L[p0, p1])
-        if isinstance(node.op, SwapGate):
-            total += 3.0 * lf
-        else:
-            try:
-                k = float(decomp_cost(Operator(node.op).data, basis_gate))
-            except Exception:
-                k = 1.0
-            total += k * lf
+        try:
+            k = float(decomp_cost(Operator(node.op).data, basis_gate))
+        except Exception:
+            k = 1.0
+        total += k * lf
     return total
 
 

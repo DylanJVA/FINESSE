@@ -58,7 +58,6 @@ DECAY_RESET            = 5     # consecutive SWAPs before resetting all δ to 1
 ATTEMPT_LIMIT_FACTOR   = 10    # valve fires after (factor × n_qubits) SWAPs without progress
                                # matches Qiskit's Heuristic(attempt_limit=10 * num_dag_qubits)
 SCORE_EPSILON          = 1e-10 # tie-breaking threshold for heuristic score comparison
-DIST_FID_SWAP_WEIGHT   = 3.0   # edge weight multiplier in D_fid: 1.0 = single-gate lf, 3.0 = SWAP cost
 FIDELITY_FLOOR         = 1e-10 # clamp F[i,j] away from zero before taking -log
 
 
@@ -110,8 +109,13 @@ def _build_dist(coupling_map: CouplingMap) -> np.ndarray:
     return d
 
 
-def _build_dist_fid(coupling_map: CouplingMap, L_raw: np.ndarray) -> np.ndarray:
+def _build_dist_fid(coupling_map: CouplingMap, L_raw: np.ndarray,
+                    swap_cost: float) -> np.ndarray:
     """D_fid[i][j] = min Σ(-log F[e]) over paths i→j (Dijkstra with -log F weights).
+
+    Each edge is weighted by swap_cost * L_raw[u,v], where swap_cost is the number
+    of native basis gates needed to implement a SWAP (k(SWAP, basis_gate)).  This
+    reflects that routing through an edge incurs a SWAP, not a single gate.
 
     When fidelity is uniform, D_fid reduces to a scalar multiple of the hop-count
     distance.  When edges differ in fidelity, longer paths through reliable edges
@@ -120,7 +124,7 @@ def _build_dist_fid(coupling_map: CouplingMap, L_raw: np.ndarray) -> np.ndarray:
     n = coupling_map.size()
     adj_w: list[list[tuple[int, float]]] = [[] for _ in range(n)]
     for u, v in coupling_map.get_edges():
-        w = DIST_FID_SWAP_WEIGHT * float(L_raw[u, v])
+        w = swap_cost * float(L_raw[u, v])
         adj_w[u].append((v, w))
         adj_w[v].append((u, w))
     d = np.full((n, n), np.inf)
@@ -142,7 +146,8 @@ def _build_dist_fid(coupling_map: CouplingMap, L_raw: np.ndarray) -> np.ndarray:
 
 
 def _dijkstra_path(coupling_map: CouplingMap, src: int, dst: int,
-                   L_raw: np.ndarray | None = None) -> list[int]:
+                   L_raw: np.ndarray | None = None,
+                   swap_cost: float = 3.0) -> list[int]:
     """Shortest path from src to dst.
 
     If L_raw is provided uses fidelity-weighted edges (same weights as D_fid),
@@ -152,7 +157,7 @@ def _dijkstra_path(coupling_map: CouplingMap, src: int, dst: int,
     # Build weighted adjacency list once
     adj_w: list[list[tuple[int, float]]] = [[] for _ in range(n)]
     for a, b in coupling_map.get_edges():
-        w = DIST_FID_SWAP_WEIGHT * float(L_raw[a, b]) if L_raw is not None else 1.0
+        w = swap_cost * float(L_raw[a, b]) if L_raw is not None else 1.0
         adj_w[a].append((b, w))
         adj_w[b].append((a, w))
 
@@ -377,11 +382,15 @@ def route(
     if fidelity_matrix is not None:
         L_raw = -np.log(np.maximum(fidelity_matrix, FIDELITY_FLOOR))
 
+    # SWAP decomposition cost in the native basis — used to weight edges in D_fid.
+    # Routing through an edge requires a SWAP, so each hop costs k(SWAP) native gates.
+    swap_cost = float(decomp_cost(SWAP_MATRIX, basis_gate))
+
     # dist_fid[i,j] = min-lf Dijkstra path cost from i to j.
     # Used in H_dist when fidelity is active (same lf units as L_raw).
     dist_fid: np.ndarray | None = None
     if L_raw is not None:
-        d_fid = _build_dist_fid(coupling_map, L_raw)
+        d_fid = _build_dist_fid(coupling_map, L_raw, swap_cost)
         if fidelity_blend < 1.0:
             # Blend raw hop-count and lf-weighted distances without normalising.
             # Normalising squashes distances to [0,1], making them tiny relative
@@ -646,7 +655,7 @@ def route(
         basic = (F_sum / len(F)) if mode == 'sabre' else F_sum
         decay_factor = float(max(decay[p0], decay[p1])) if use_decay else 1.0
         edge_penalty=0
-        #edge_penalty = (edge_cost_weight * DIST_FID_SWAP_WEIGHT * float(L_raw[p0, p1])
+        #edge_penalty = (edge_cost_weight * swap_cost * float(L_raw[p0, p1])
         #                if dist_fid is not None and edge_cost_weight > 0.0 else 0.0)
         H_dist = decay_factor * (basic + W * (E_sum / len(E) if E else 0.0) + edge_penalty)
 
@@ -710,7 +719,7 @@ def route(
             _vdist = dist_fid if dist_fid is not None else dist
             best_nid = min(F, key=lambda nid: _vdist[cur_phys_of(nodes[nid])[0]][cur_phys_of(nodes[nid])[1]])
             bp0, bp1 = cur_phys_of(nodes[best_nid])
-            path = _dijkstra_path(coupling_map, bp0, bp1, L_raw=L_raw)
+            path = _dijkstra_path(coupling_map, bp0, bp1, L_raw=L_raw, swap_cost=swap_cost)
             mid = len(path) // 2
             for i in range(mid - 1):
                 pa, pb = path[i], path[i + 1]
