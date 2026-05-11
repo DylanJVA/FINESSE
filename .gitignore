@@ -14,9 +14,9 @@ Results/
 *.npy
 *.parquet
 
-# Notebooks (keep only PaperPlots.ipynb)
+# Notebooks (keep only PaperPlots_native.ipynb)
 *.ipynb
-!PaperPlots.ipynb
+!PaperPlots_native.ipynb
 
 # Figures (generated at runtime)
 figures/
