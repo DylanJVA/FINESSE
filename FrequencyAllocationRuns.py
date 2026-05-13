@@ -84,7 +84,10 @@ def _ibm_topology(backend_name: str):
         backend = backends[backend_name]
     n    = backend.num_qubits
     F    = np.zeros((n, n))
-    gate = 'cx' if 'cx' in backend.target.operation_names else 'cz'
+    two_q_gates = ['cx', 'cz', 'ecr', 'rzx']
+    gate = next((g for g in two_q_gates if g in backend.target.operation_names), None)
+    if gate is None:
+        raise ValueError(f"No known 2Q gate found in {backend_name}. Available: {backend.target.operation_names}")
     for qargs, props in backend.target[gate].items():
         if props is not None and props.error is not None:
             i, j = qargs
