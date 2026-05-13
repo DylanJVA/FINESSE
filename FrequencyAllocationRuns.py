@@ -76,28 +76,32 @@ def build_stress_circuits():
 # ── IBM fake topologies ───────────────────────────────────────────────────────
 def _ibm_topology(backend_name: str):
     from qiskit_ibm_runtime.fake_provider import FakeProviderForBackendV2
+    from qiskit.transpiler import CouplingMap
     import warnings
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         backends = {b.name: b for b in FakeProviderForBackendV2().backends()}
         backend = backends[backend_name]
-    cm = backend.coupling_map
-    n  = backend.num_qubits
-    F  = np.zeros((n, n))
+    n    = backend.num_qubits
+    F    = np.zeros((n, n))
     gate = 'cx' if 'cx' in backend.target.operation_names else 'cz'
     for qargs, props in backend.target[gate].items():
         if props is not None and props.error is not None:
             i, j = qargs
             F[i, j] = F[j, i] = 1.0 - props.error
+    # Remove dead links (error=1.0 → F=0) from the coupling map so no config
+    # routes through them and lf_cost stays finite for all runs.
+    live_edges = [(i, j) for i, j in backend.coupling_map.get_edges() if F[i, j] > 0]
+    cm = CouplingMap(live_edges)
     return (backend_name, cm, F)
 
 def build_ibm_topologies():
     """IBM backend for benchmarking.
 
-    fake_brooklyn: 65q, std=0.009, range=0.045 — no dead links, covers all circuits
+    fake_brisbane: 127q, std=0.014, range=0.082 — 1 dead link removed from coupling map
     Note: circuits with more qubits than the backend are skipped automatically.
     """
-    return [_ibm_topology("fake_brooklyn")]
+    return [_ibm_topology("fake_brisbane")]
 
 
 # ── Topology ──────────────────────────────────────────────────────────────────
