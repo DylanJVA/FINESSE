@@ -405,6 +405,9 @@ if __name__ == "__main__":
             ("FINESSE", dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=1.0, beta=20.0)),
             ("FINESSE", dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=1.0, beta=33.0)),
             ("FINESSE", dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=1.0, beta=100.0)),
+            ("FINESSE", dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=1.0, beta=200.0)),
+            ("FINESSE", dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=1.0, beta=500.0)),
+            ("FINESSE", dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=1.0, beta=1000.0)),
             ("FINESSE", dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=0.0, beta=1.0)),
         ]
         configs[:] = grid_configs
