@@ -94,13 +94,13 @@ def _ibm_topology(backend_name: str):
 def build_ibm_topologies():
     """Three IBM backends spanning low→high fidelity heterogeneity.
 
-    fake_toronto:    27q, std=0.024, range=0.122 — small, heterogeneous
-    fake_sydney:     27q, std=0.027, range=0.146 — small, most heterogeneous
-    fake_washington: 127q, std=0.017, range=0.098 — large, heterogeneous
+    fake_toronto:  27q, std=0.024, range=0.122 — small, heterogeneous
+    fake_sydney:   27q, std=0.027, range=0.146 — small, most heterogeneous
+    fake_brooklyn: 65q, std=0.009, range=0.045 — large, no dead links
     Note: circuits with more qubits than the backend are skipped automatically.
     """
     return [_ibm_topology(name) for name in
-            ("fake_toronto", "fake_sydney", "fake_washington")]
+            ("fake_toronto", "fake_sydney", "fake_brooklyn")]
 
 
 # ── Topology ──────────────────────────────────────────────────────────────────
