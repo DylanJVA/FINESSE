@@ -270,7 +270,8 @@ def route(
     fidelity_matrix: np.ndarray | None = None,
     fidelity_mirror: bool = True,
     edge_cost_weight: float = 0.0,
-    fidelity_blend: float = .5,
+    alpha: float = 1.0,
+    beta: float = 0.5,
     use_decay: bool = False,
     initial_cur: list[int] | None = None,
     n_trials: int = 1,
@@ -307,9 +308,13 @@ def route(
                           Defaults to 0 (disabled).
         basis_gate:       Native 2Q gate for Weyl decomposition cost.
                           Supported: 'sqrt_iswap', 'cx'. Defaults to 'sqrt_iswap'.
+        alpha:            Weight on D_hop in the blended distance D' = α·D_hop + β·D_fid.
+                          Default 1.0. Set to 0 for pure fidelity routing.
+        beta:             Weight on D_fid in the blended distance D' = α·D_hop + β·D_fid.
+                          Default 0.5. Ignored when fidelity_matrix is None.
         fidelity_matrix:  Optional (n, n) array where F[i,j] is the 2Q gate fidelity
-                          on link (i,j). When provided, H uses D_fid (lf-weighted
-                          Dijkstra) for routing distances instead of D_hop.
+                          on link (i,j). When provided, H uses D' = α·D_hop + β·D_fid
+                          for routing distances.
         fidelity_mirror:  Whether fidelity enters the intermediate mirror layer
                           (default True). When True and fidelity_matrix is provided,
                           mirror acceptance compares k_U·lf + H_fid(current) vs
@@ -351,7 +356,7 @@ def route(
                 aggression=aggression, seed=seed + i, mode=mode,
                 valve=valve, bidir_passes=bidir_passes, basis_gate=basis_gate,
                 fidelity_matrix=fidelity_matrix, fidelity_mirror=fidelity_mirror,
-                edge_cost_weight=edge_cost_weight, fidelity_blend=fidelity_blend,
+                edge_cost_weight=edge_cost_weight, alpha=alpha, beta=beta,
                 use_decay=use_decay, initial_cur=initial_cur, n_trials=1,
                 emit_ops=emit_ops, reverse=reverse,
             )
@@ -391,14 +396,7 @@ def route(
     dist_fid: np.ndarray | None = None
     if L_raw is not None:
         d_fid = _build_dist_fid(coupling_map, L_raw, swap_cost)
-        if fidelity_blend < 1.0:
-            # Blend raw hop-count and lf-weighted distances without normalising.
-            # Normalising squashes distances to [0,1], making them tiny relative
-            # to the raw-lf edge_penalty on large/noisy backends (e.g. Washington
-            # 127q), which causes the edge penalty to dominate and break routing.
-            dist_fid = (1.0 - fidelity_blend) * dist + fidelity_blend * d_fid
-        else:
-            dist_fid = d_fid
+        dist_fid = alpha * dist + beta * d_fid
 
     # ------------------------------------------------------------------
     # §IV.C / Fig. 5 — Reverse traversal for initial mapping

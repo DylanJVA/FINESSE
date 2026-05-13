@@ -333,6 +333,9 @@ if __name__ == "__main__":
                              "Circuit name defaults to the filename stem.")
     parser.add_argument("--compare",    action="store_true",
                         help="Compare 3 FASST/FINESSE variants on quick circuits to isolate config changes")
+    parser.add_argument("--grid",       action="store_true",
+                        help="Grid search over (alpha, beta) on a small circuit subset. "
+                             "Use --ibm for IBM topologies, --seeds N to change seed count.")
     args = parser.parse_args()
 
     if args.qasm:
@@ -366,6 +369,89 @@ if __name__ == "__main__":
         print(df.groupby(["device","config"])[["swaps","depth","lf_cost"]].mean().round(2))
         import sys; sys.exit(0)
 
+    if args.grid:
+        if args.ibm:
+            devs = build_ibm_topologies()
+            basis_gate = 'cx'
+            out_file = "Results/grid_ibm.csv"
+        else:
+            devs = build_topology(wraparound=False)
+            basis_gate = 'sqrt_iswap'
+            out_file = "Results/grid_snail.csv"
+
+        grid_circuits = [
+            ("qft_n10",        _mqt("qft",        10, "indep")),
+            ("seca_n11",       fetch_qasmbench("seca_n11",       size="medium")),
+            ("dnn_n16",        fetch_qasmbench("dnn_n16",        size="medium")),
+            ("bv_n19",         fetch_qasmbench("bv_n19",         size="medium")),
+            ("qft_n24",        _mqt("qft",        24, "indep")),
+            ("ising_n26",      fetch_qasmbench("ising_n26",      size="medium")),
+        ]
+
+        # α=1 fixed; sweep β. Last entry is pure-fidelity ablation (α=0).
+        grid_configs = [
+            ("SABRE",     dict(mode="lightsabre", aggression=0)),
+            ("F b0",      dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=1.0, beta=0.0)),
+            ("F b1",      dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=1.0, beta=1.0)),
+            ("F b5",      dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=1.0, beta=5.0)),
+            ("F b10",     dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=1.0, beta=10.0)),
+            ("F b20",     dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=1.0, beta=20.0)),
+            ("F b33",     dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=1.0, beta=33.0)),
+            ("F b100",    dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=1.0, beta=100.0)),
+            ("F a0b1",    dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=0.0, beta=1.0)),
+        ]
+        FIDELITY_GRID = {n for n, _ in grid_configs if n != "SABRE"}
+        configs[:] = grid_configs
+        FIDELITY_CONFIGS.clear(); FIDELITY_CONFIGS.update(FIDELITY_GRID)
+
+        n_seeds = args.seeds if args.seeds is not None else 5
+        df = run_circuits(grid_circuits, seed_list=list(range(n_seeds)), label="grid",
+                          out_path=out_file, wraparound=False, basis_gate=basis_gate, devices=devs)
+
+        # Post-selection summary: best seed per (device, circuit, config)
+        # Native: SABRE→min_swaps, FINESSE variants→min_lf_cost
+        # LF:     all→min_lf_cost
+        nat_col = {"SABRE": "swaps"}
+        nat_frames, lf_frames = [], []
+        for cfg, sub in df.groupby("config"):
+            col = nat_col.get(cfg, "lf_cost")
+            nat_frames.append(sub.sort_values(col).drop_duplicates(subset=["device", "circuit"], keep="first"))
+            lf_frames.append(sub.sort_values("lf_cost").drop_duplicates(subset=["device", "circuit"], keep="first"))
+        ps_nat = pd.concat(nat_frames)
+        ps_lf  = pd.concat(lf_frames)
+
+        sabre_nat = ps_nat[ps_nat.config == "SABRE"].set_index(["device", "circuit"])["lf_cost"]
+        sabre_lf  = ps_lf[ps_lf.config  == "SABRE"].set_index(["device", "circuit"])["lf_cost"]
+
+        print("\n=== Grid search: FINESSE vs SABRE  (mean % over circuits/devices) ===")
+        print(f"{'config':<10}  {'native ps':>10}  {'lf ps':>10}")
+        print("-" * 36)
+        for cfg, _ in grid_configs:
+            sub_nat = ps_nat[ps_nat.config == cfg].set_index(["device", "circuit"])["lf_cost"]
+            sub_lf  = ps_lf[ps_lf.config  == cfg].set_index(["device", "circuit"])["lf_cost"]
+            common = sabre_nat.index.intersection(sub_nat.index)
+            pct_nat = 100 * (sub_nat[common] - sabre_nat[common]) / sabre_nat[common]
+            pct_lf  = 100 * (sub_lf[common]  - sabre_lf[common])  / sabre_lf[common]
+            print(f"{cfg:<10}  {pct_nat.mean():>+9.1f}%  {pct_lf.mean():>+9.1f}%")
+
+        print("\n=== Per-device breakdown (lf post-selection) ===")
+        for dev in df["device"].unique():
+            print(f"\n  {dev}")
+            print(f"  {'config':<10}  {'native ps':>10}  {'lf ps':>10}")
+            for cfg, _ in grid_configs:
+                sub_nat = ps_nat[(ps_nat.config == cfg) & (ps_nat.device == dev)].set_index("circuit")["lf_cost"]
+                sub_lf  = ps_lf[(ps_lf.config  == cfg) & (ps_lf.device  == dev)].set_index("circuit")["lf_cost"]
+                sn = sabre_nat[sabre_nat.index.get_level_values("device") == dev].droplevel("device")
+                sl = sabre_lf[sabre_lf.index.get_level_values("device")  == dev].droplevel("device")
+                common = sn.index.intersection(sub_nat.index)
+                if common.empty:
+                    continue
+                pct_nat = 100 * (sub_nat[common] - sn[common]) / sn[common]
+                pct_lf  = 100 * (sub_lf[common]  - sl[common]) / sl[common]
+                print(f"  {cfg:<10}  {pct_nat.mean():>+9.1f}%  {pct_lf.mean():>+9.1f}%")
+
+        import sys; sys.exit(0)
+
     if args.compare:
         if args.ibm:
             devs = build_ibm_topologies()
@@ -383,10 +469,10 @@ if __name__ == "__main__":
         compare_configs = [
             ("SABRE",           dict(mode="lightsabre", aggression=0)),
             ("MIRAGE",          dict(mode="lightsabre", aggression=2)),
-            ("FINESSE b=.60",   dict(mode="lightsabre", aggression=2, fidelity_mirror=True, edge_cost_weight=0.5, fidelity_blend=.60)),
-            ("FINESSE b=0.55",  dict(mode="lightsabre", aggression=2, fidelity_mirror=True, edge_cost_weight=0.5, fidelity_blend=0.55)),
-            ("FINESSE b=0.5",  dict(mode="lightsabre", aggression=2, fidelity_mirror=True, edge_cost_weight=0.5, fidelity_blend=0.5)),
-            ("FINESSE b=0.45",   dict(mode="lightsabre", aggression=2, fidelity_mirror=True, edge_cost_weight=0.5, fidelity_blend=0.45)),
+            ("FINESSE b=.60",   dict(mode="lightsabre", aggression=2, fidelity_mirror=True, edge_cost_weight=0.5, beta=.60)),
+            ("FINESSE b=0.55",  dict(mode="lightsabre", aggression=2, fidelity_mirror=True, edge_cost_weight=0.5, beta=0.55)),
+            ("FINESSE b=0.5",  dict(mode="lightsabre", aggression=2, fidelity_mirror=True, edge_cost_weight=0.5, beta=0.5)),
+            ("FINESSE b=0.45",   dict(mode="lightsabre", aggression=2, fidelity_mirror=True, edge_cost_weight=0.5, beta=0.45)),
         ]
         FIDELITY_COMPARE = {n for n, _ in compare_configs if "FINESSE" in n}
         configs[:] = compare_configs
