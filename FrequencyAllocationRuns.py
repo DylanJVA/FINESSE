@@ -187,7 +187,7 @@ def build_topology(wraparound=False):
 # ── Configs ───────────────────────────────────────────────────────────────────
 configs = [
     ("SABRE",   dict(mode="lightsabre", aggression=0)),
-    ("MIRAGE",  dict(mode="lightsabre", aggression=2)),
+    ("MIRAGE",  dict(mode="lightsabre", aggression=2, pure_mirror=True)),
     ("FASST",   dict(mode="lightsabre", aggression=0,  edge_cost_weight=0.5)),
     ("FINESSE", dict(mode="lightsabre", aggression=2,  fidelity_mirror=True, edge_cost_weight=0.5)),
 ]

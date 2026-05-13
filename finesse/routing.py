@@ -269,9 +269,10 @@ def route(
     basis_gate: str = 'sqrt_iswap',
     fidelity_matrix: np.ndarray | None = None,
     fidelity_mirror: bool = True,
+    pure_mirror: bool = False,
     edge_cost_weight: float = 0.0,
     alpha: float = 1.0,
-    beta: float = 0.5,
+    beta: float = 1.0,
     use_decay: bool = False,
     initial_cur: list[int] | None = None,
     n_trials: int = 1,
@@ -311,7 +312,7 @@ def route(
         alpha:            Weight on D_hop in the blended distance D' = α·D_hop + β·D_fid.
                           Default 1.0. Set to 0 for pure fidelity routing.
         beta:             Weight on D_fid in the blended distance D' = α·D_hop + β·D_fid.
-                          Default 0.5. Ignored when fidelity_matrix is None.
+                          Default 1.0. Ignored when fidelity_matrix is None.
         fidelity_matrix:  Optional (n, n) array where F[i,j] is the 2Q gate fidelity
                           on link (i,j). When provided, H uses D' = α·D_hop + β·D_fid
                           for routing distances.
@@ -320,7 +321,10 @@ def route(
                           mirror acceptance compares k_U·lf + H_fid(current) vs
                           k_U'·lf + H_fid(permuted). When False, mirror acceptance
                           uses hop-count layout scores regardless of fidelity_matrix.
-                          Ignored when aggression=0 or fidelity_matrix=None.
+                          Ignored when aggression=0, fidelity_matrix=None, or pure_mirror=True.
+        pure_mirror:      If True, use the original MIRAGE criterion (McKinney et al.):
+                          accept mirror iff k(SWAP·U) ≤ k(U), with no routing heuristic.
+                          Overrides fidelity_mirror. Use this for faithful MIRAGE comparison.
         initial_cur:      Optional initial logical→physical mapping.
         n_trials:         Number of independent routing trials (default 1). Each
                           trial uses seed+i. Best trial selected by total
@@ -356,6 +360,7 @@ def route(
                 aggression=aggression, seed=seed + i, mode=mode,
                 valve=valve, bidir_passes=bidir_passes, basis_gate=basis_gate,
                 fidelity_matrix=fidelity_matrix, fidelity_mirror=fidelity_mirror,
+                pure_mirror=pure_mirror,
                 edge_cost_weight=edge_cost_weight, alpha=alpha, beta=beta,
                 use_decay=use_decay, initial_cur=initial_cur, n_trials=1,
                 emit_ops=emit_ops, reverse=reverse,
@@ -515,7 +520,20 @@ def route(
                         # successors in E, H_perm == H_cur always and mirror never fires.
                         E_mirror = extended_set(other_f + [nid])
 
-                        if dist_fid is not None and fidelity_mirror:
+                        if pure_mirror:
+                            # True MIRAGE criterion (McKinney et al.): accept iff k(SWAP·U) ≤ k(U).
+                            # No routing heuristic — purely gate-cost based.
+                            try:
+                                U_mat     = Operator(node.op).data
+                                U_mir_mat = SWAP_MATRIX @ U_mat
+                                k_U       = float(decomp_cost(U_mat,     basis_gate))
+                                k_Up      = float(decomp_cost(U_mir_mat, basis_gate))
+                                if accept_mirror(k_U, k_Up, aggression):
+                                    U_mirror = U_mir_mat
+                                    mirrored = True
+                            except Exception:
+                                pass
+                        elif dist_fid is not None and fidelity_mirror:
                             # Fidelity-aware: compare k_U*lf + H_fid(cur) vs k_U'*lf + H_fid(perm).
                             #   k_U/k_U' use the native basis_gate decomp cost (Weyl-chamber,
                             #   basis-independent). On sqrt_iswap hardware, k_CX = k_{SWAP·CX} = 2,

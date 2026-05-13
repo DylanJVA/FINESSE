@@ -16,7 +16,7 @@ Results/
 
 # Notebooks (keep only PaperPlots_native.ipynb)
 *.ipynb
-!PaperPlots_native.ipynb
+!PaperPlots.ipynb
 
 # Figures (generated at runtime)
 figures/
