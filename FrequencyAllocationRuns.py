@@ -186,10 +186,10 @@ def build_topology(wraparound=False):
 
 # ── Configs ───────────────────────────────────────────────────────────────────
 configs = [
-    ("Standard SABRE",  dict(mode="lightsabre", aggression=0)),
-    ("Standard MIRAGE", dict(mode="lightsabre", aggression=2)),
-    ("FASST",           dict(mode="lightsabre", aggression=0,  edge_cost_weight=0.5)),
-    ("FINESSE",         dict(mode="lightsabre", aggression=2,  fidelity_mirror=True, edge_cost_weight=0.5)),
+    ("SABRE",   dict(mode="lightsabre", aggression=0)),
+    ("MIRAGE",  dict(mode="lightsabre", aggression=2)),
+    ("FASST",   dict(mode="lightsabre", aggression=0,  edge_cost_weight=0.5)),
+    ("FINESSE", dict(mode="lightsabre", aggression=2,  fidelity_mirror=True, edge_cost_weight=0.5)),
 ]
 FIDELITY_CONFIGS = {"FASST", "FINESSE"}
 
@@ -215,7 +215,7 @@ def run_circuits(circuit_list, seed_list, label, out_path=None, wraparound=False
     """
     if out_path is None:
         out_path = f"results_{label}.csv"
-    fieldnames = ["suite", "device", "circuit", "config", "seed", "wraparound", "swaps", "depth", "lf_cost"]
+    fieldnames = ["device", "circuit", "router", "alpha", "beta", "seed", "swaps", "depth", "lf_cost"]
 
     write_header = not os.path.exists(out_path) or os.path.getsize(out_path) == 0
     out_file = open(out_path, "a", newline="")
@@ -253,8 +253,11 @@ def run_circuits(circuit_list, seed_list, label, out_path=None, wraparound=False
                             seed=seed, initial_cur=initial_cur, **kw,
                         )
                     row = dict(
-                        suite=label, device=dev_name, circuit=circ_name,
-                        config=cfg_name, seed=seed, wraparound=wraparound,
+                        device=dev_name, circuit=circ_name,
+                        router=cfg_name,
+                        alpha=kwargs.get("alpha", np.nan),
+                        beta=kwargs.get("beta", np.nan),
+                        seed=seed,
                         swaps=swap_count(routed),
                         depth=routed.depth(),
                         lf_cost=circuit_lf_cost(routed, F, basis_gate=basis_gate),
@@ -353,7 +356,7 @@ if __name__ == "__main__":
             run_circuits(circuits, seed_list=seed_list, label=name,
                          out_path=out_path, wraparound=wrap)
         df = pd.read_csv(out_path)
-        print(df.groupby(["device", "config"])[["swaps", "depth", "lf_cost"]].mean().round(2))
+        print(df.groupby(["device", "router", "alpha", "beta"])[["swaps", "depth", "lf_cost"]].mean().round(2))
         import sys; sys.exit(0)
 
     if args.merge:
@@ -363,10 +366,10 @@ if __name__ == "__main__":
             print("No per-seed files found matching Results/paper_s*.csv")
             import sys; sys.exit(1)
         df = pd.concat([pd.read_csv(f) for f in files], ignore_index=True)
-        df = df.sort_values(["device","circuit","config","seed","wraparound"]).reset_index(drop=True)
+        df = df.sort_values(["device","circuit","router","alpha","beta","seed"]).reset_index(drop=True)
         df.to_csv("Results/paper.csv", index=False)
         print(f"Merged {len(files)} files → Results/paper.csv ({len(df)} rows)")
-        print(df.groupby(["device","config"])[["swaps","depth","lf_cost"]].mean().round(2))
+        print(df.groupby(["device","router","alpha","beta"])[["swaps","depth","lf_cost"]].mean().round(2))
         import sys; sys.exit(0)
 
     if args.grid:
@@ -390,65 +393,88 @@ if __name__ == "__main__":
 
         # α=1 fixed; sweep β. Last entry is pure-fidelity ablation (α=0).
         grid_configs = [
-            ("SABRE",     dict(mode="lightsabre", aggression=0)),
-            ("F b0",      dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=1.0, beta=0.0)),
-            ("F b1",      dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=1.0, beta=1.0)),
-            ("F b5",      dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=1.0, beta=5.0)),
-            ("F b10",     dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=1.0, beta=10.0)),
-            ("F b20",     dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=1.0, beta=20.0)),
-            ("F b33",     dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=1.0, beta=33.0)),
-            ("F b100",    dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=1.0, beta=100.0)),
-            ("F a0b1",    dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=0.0, beta=1.0)),
+            ("SABRE",   dict(mode="lightsabre", aggression=0)),
+            ("FINESSE", dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=1.0, beta=0.0)),
+            ("FINESSE", dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=1.0, beta=1.0)),
+            ("FINESSE", dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=1.0, beta=5.0)),
+            ("FINESSE", dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=1.0, beta=10.0)),
+            ("FINESSE", dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=1.0, beta=20.0)),
+            ("FINESSE", dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=1.0, beta=33.0)),
+            ("FINESSE", dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=1.0, beta=100.0)),
+            ("FINESSE", dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=0.0, beta=1.0)),
         ]
-        FIDELITY_GRID = {n for n, _ in grid_configs if n != "SABRE"}
         configs[:] = grid_configs
-        FIDELITY_CONFIGS.clear(); FIDELITY_CONFIGS.update(FIDELITY_GRID)
+        FIDELITY_CONFIGS.clear(); FIDELITY_CONFIGS.add("FINESSE")
 
-        n_seeds = args.seeds if args.seeds is not None else 5
-        df = run_circuits(grid_circuits, seed_list=list(range(n_seeds)), label="grid",
+        tag = "ibm" if args.ibm else "snail"
+        if args.seed is not None:
+            seed_list = [args.seed]
+            out_file = f"Results/grid_{tag}_s{args.seed}.csv"
+        else:
+            n_seeds = args.seeds if args.seeds is not None else 5
+            seed_list = list(range(n_seeds))
+        df = run_circuits(grid_circuits, seed_list=seed_list, label="grid",
                           out_path=out_file, wraparound=False, basis_gate=basis_gate, devices=devs)
 
-        # Post-selection summary: best seed per (device, circuit, config)
-        # Native: SABRE→min_swaps, FINESSE variants→min_lf_cost
+        # Post-selection summary: best seed per (device, circuit, router, alpha, beta)
+        # Native: SABRE→min_swaps, FINESSE→min_lf_cost
         # LF:     all→min_lf_cost
-        nat_col = {"SABRE": "swaps"}
+        group_keys = ["device", "circuit", "router", "alpha", "beta"]
         nat_frames, lf_frames = [], []
-        for cfg, sub in df.groupby("config"):
-            col = nat_col.get(cfg, "lf_cost")
+        for keys, sub in df.groupby(group_keys, dropna=False):
+            router_name = keys[2]
+            col = "swaps" if router_name == "SABRE" else "lf_cost"
             nat_frames.append(sub.sort_values(col).drop_duplicates(subset=["device", "circuit"], keep="first"))
             lf_frames.append(sub.sort_values("lf_cost").drop_duplicates(subset=["device", "circuit"], keep="first"))
         ps_nat = pd.concat(nat_frames)
         ps_lf  = pd.concat(lf_frames)
 
-        sabre_nat = ps_nat[ps_nat.config == "SABRE"].set_index(["device", "circuit"])["lf_cost"]
-        sabre_lf  = ps_lf[ps_lf.config  == "SABRE"].set_index(["device", "circuit"])["lf_cost"]
+        def _get(ps, router, alpha, beta):
+            m = ps[ps.router == router]
+            if not np.isnan(alpha): m = m[m.alpha == alpha]
+            if not np.isnan(beta):  m = m[m.beta  == beta]
+            return m.set_index(["device", "circuit"])["lf_cost"]
+
+        sabre_nat = _get(ps_nat, "SABRE", np.nan, np.nan)
+        sabre_lf  = _get(ps_lf,  "SABRE", np.nan, np.nan)
+
+        # Build ordered list of (label, router, alpha, beta) for display
+        seen, display_configs = set(), []
+        for rtr, kw in grid_configs:
+            a, b = kw.get("alpha", np.nan), kw.get("beta", np.nan)
+            key = (rtr, a, b)
+            if key not in seen:
+                seen.add(key)
+                label = rtr if rtr == "SABRE" else f"a={a} b={b}"
+                display_configs.append((label, rtr, a, b))
 
         print("\n=== Grid search: FINESSE vs SABRE  (mean % over circuits/devices) ===")
-        print(f"{'config':<10}  {'native ps':>10}  {'lf ps':>10}")
-        print("-" * 36)
-        for cfg, _ in grid_configs:
-            sub_nat = ps_nat[ps_nat.config == cfg].set_index(["device", "circuit"])["lf_cost"]
-            sub_lf  = ps_lf[ps_lf.config  == cfg].set_index(["device", "circuit"])["lf_cost"]
-            common = sabre_nat.index.intersection(sub_nat.index)
+        print(f"{'config':<16}  {'native ps':>10}  {'lf ps':>10}")
+        print("-" * 42)
+        for label, rtr, a, b in display_configs:
+            sub_nat = _get(ps_nat, rtr, a, b)
+            sub_lf  = _get(ps_lf,  rtr, a, b)
+            common  = sabre_nat.index.intersection(sub_nat.index)
             pct_nat = 100 * (sub_nat[common] - sabre_nat[common]) / sabre_nat[common]
             pct_lf  = 100 * (sub_lf[common]  - sabre_lf[common])  / sabre_lf[common]
-            print(f"{cfg:<10}  {pct_nat.mean():>+9.1f}%  {pct_lf.mean():>+9.1f}%")
+            print(f"{label:<16}  {pct_nat.mean():>+9.1f}%  {pct_lf.mean():>+9.1f}%")
 
         print("\n=== Per-device breakdown (lf post-selection) ===")
-        for dev in df["device"].unique():
+        for dev in sorted(df["device"].unique()):
             print(f"\n  {dev}")
-            print(f"  {'config':<10}  {'native ps':>10}  {'lf ps':>10}")
-            for cfg, _ in grid_configs:
-                sub_nat = ps_nat[(ps_nat.config == cfg) & (ps_nat.device == dev)].set_index("circuit")["lf_cost"]
-                sub_lf  = ps_lf[(ps_lf.config  == cfg) & (ps_lf.device  == dev)].set_index("circuit")["lf_cost"]
-                sn = sabre_nat[sabre_nat.index.get_level_values("device") == dev].droplevel("device")
-                sl = sabre_lf[sabre_lf.index.get_level_values("device")  == dev].droplevel("device")
-                common = sn.index.intersection(sub_nat.index)
-                if common.empty:
-                    continue
+            print(f"  {'config':<16}  {'native ps':>10}  {'lf ps':>10}")
+            sn = sabre_nat[sabre_nat.index.get_level_values("device") == dev].droplevel("device")
+            sl = sabre_lf[sabre_lf.index.get_level_values("device")  == dev].droplevel("device")
+            for label, rtr, a, b in display_configs:
+                sub_nat = _get(ps_nat, rtr, a, b)
+                sub_lf  = _get(ps_lf,  rtr, a, b)
+                sub_nat = sub_nat[sub_nat.index.get_level_values("device") == dev].droplevel("device")
+                sub_lf  = sub_lf[sub_lf.index.get_level_values("device")  == dev].droplevel("device")
+                common  = sn.index.intersection(sub_nat.index)
+                if common.empty: continue
                 pct_nat = 100 * (sub_nat[common] - sn[common]) / sn[common]
                 pct_lf  = 100 * (sub_lf[common]  - sl[common]) / sl[common]
-                print(f"  {cfg:<10}  {pct_nat.mean():>+9.1f}%  {pct_lf.mean():>+9.1f}%")
+                print(f"  {label:<16}  {pct_nat.mean():>+9.1f}%  {pct_lf.mean():>+9.1f}%")
 
         import sys; sys.exit(0)
 
@@ -480,7 +506,7 @@ if __name__ == "__main__":
         n_seeds = args.seeds if args.seeds is not None else 5
         df = run_circuits(quick_circuits, seed_list=list(range(n_seeds)), label="compare",
                           out_path=out_file, wraparound=False, basis_gate=basis_gate, devices=devs)
-        print(df.groupby(["device", "config"])[["swaps", "depth", "lf_cost"]].mean().round(3))
+        print(df.groupby(["device", "router", "alpha", "beta"])[["swaps", "depth", "lf_cost"]].mean().round(3))
         import sys; sys.exit(0)
 
     if args.ibm:
@@ -505,7 +531,7 @@ if __name__ == "__main__":
         df = pd.read_csv(out_path)
         ran = {n for n, _ in all_circuits}
         df = df[df["circuit"].isin(ran)]
-        print(df.groupby(["device", "config"])[["swaps", "depth", "lf_cost"]].mean().round(2))
+        print(df.groupby(["device", "router", "alpha", "beta"])[["swaps", "depth", "lf_cost"]].mean().round(2))
         import sys; sys.exit(0)
 
     if args.paper:
@@ -523,16 +549,14 @@ if __name__ == "__main__":
             seed_list = list(range(n_seeds))
             default_out = "Results/paper.csv"
         out_path = f"{args.output}.csv" if args.output else default_out
-        for wrap in [False, True]:
-            devs = build_topology(wraparound=wrap)
-            tag = "wrap" if wrap else "no-wrap"
-            print(f"=== PAPER ({len(paper_circuits)} circuits, seeds={seed_list}, {tag}) ===")
-            run_circuits(paper_circuits, seed_list=seed_list, label="paper",
-                         out_path=out_path, wraparound=wrap, devices=devs)
+        devs = build_topology(wraparound=False)
+        print(f"=== PAPER ({len(paper_circuits)} circuits, seeds={seed_list}) ===")
+        run_circuits(paper_circuits, seed_list=seed_list, label="paper",
+                     out_path=out_path, wraparound=False, devices=devs)
         df = pd.read_csv(out_path)
         ran = {n for n, _ in paper_circuits}
         df = df[df["circuit"].isin(ran)]
-        print(df.groupby(["device", "config"])[["swaps", "depth", "lf_cost"]].mean().round(2))
+        print(df.groupby(["device", "router", "alpha", "beta"])[["swaps", "depth", "lf_cost"]].mean().round(2))
         import sys; sys.exit(0)
 
     if args.stress:
@@ -550,17 +574,15 @@ if __name__ == "__main__":
             seed_list = list(range(n_seeds))
             default_out = "Results/stress.csv"
         out_path = f"{args.output}.csv" if args.output else default_out
-        for wrap in [False, True]:
-            devs = build_topology(wraparound=wrap)
-            tag = "wrap" if wrap else "no-wrap"
-            print(f"=== STRESS ({len(stress_circuits)} circuits, seeds={seed_list}, {tag}) ===")
-            run_circuits(stress_circuits, seed_list=seed_list, label="stress",
-                         out_path=out_path, wraparound=wrap, devices=devs)
+        devs = build_topology(wraparound=False)
+        print(f"=== STRESS ({len(stress_circuits)} circuits, seeds={seed_list}) ===")
+        run_circuits(stress_circuits, seed_list=seed_list, label="stress",
+                     out_path=out_path, wraparound=False, devices=devs)
         import pandas as pd
         df = pd.read_csv(out_path)
         ran = {n for n, _ in stress_circuits}
         df = df[df["circuit"].isin(ran)]
-        print(df.groupby(["device", "config"])[["swaps", "depth", "lf_cost"]].mean().round(2))
+        print(df.groupby(["device", "router", "alpha", "beta"])[["swaps", "depth", "lf_cost"]].mean().round(2))
         import sys; sys.exit(0)
 
     if args.quick:
@@ -574,7 +596,7 @@ if __name__ == "__main__":
         quick_out = f"{args.output}.csv" if args.output else "quick_check.csv"
         df = run_circuits(quick_circuits, seed_list=list(range(3)), label="quick",
                           out_path=quick_out, wraparound=args.wraparound, devices=devs)
-        print(df.groupby(["device","config"])[["swaps","depth","lf_cost"]].mean().round(2))
+        print(df.groupby(["device","router","alpha","beta"])[["swaps","depth","lf_cost"]].mean().round(2))
         import sys; sys.exit(0)
 
     if args.medium:
@@ -591,7 +613,7 @@ if __name__ == "__main__":
         medium_out = f"{args.output}.csv" if args.output else "medium_check.csv"
         df = run_circuits(medium_circuits, seed_list=list(range(3)), label="medium",
                           out_path=medium_out, wraparound=args.wraparound, devices=devs)
-        print(df.groupby(["device","config"])[["swaps","depth","lf_cost"]].mean().round(2))
+        print(df.groupby(["device","router","alpha","beta"])[["swaps","depth","lf_cost"]].mean().round(2))
         import sys; sys.exit(0)
 
     if args.output and args.suite == "all":
@@ -635,4 +657,4 @@ if __name__ == "__main__":
         out_path = f"{args.output}.csv" if args.output else None
         df = run_circuits(circuits_for_suite, seed_list=list(range(n_seeds)), label=name,
                           out_path=out_path, wraparound=args.wraparound, devices=devs)
-        print(df.groupby(["device","config"])[["swaps","depth","lf_cost"]].mean().round(2))
+        print(df.groupby(["device","router","alpha","beta"])[["swaps","depth","lf_cost"]].mean().round(2))

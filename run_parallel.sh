@@ -1,16 +1,27 @@
 #!/bin/bash
 # Usage:
-#   ./run_parallel.sh paper   [seeds] [jobs]
-#   ./run_parallel.sh ibm [seeds] [jobs]
+#   ./run_parallel.sh paper      [seeds] [jobs]
+#   ./run_parallel.sh stress     [seeds] [jobs]
+#   ./run_parallel.sh ibm        [seeds] [jobs]
+#   ./run_parallel.sh grid       [seeds] [jobs]
+#   ./run_parallel.sh grid --ibm [seeds] [jobs]
 #
 # Examples:
 #   ./run_parallel.sh paper           # 20 seeds, all cores
 #   ./run_parallel.sh paper 20 8      # 20 seeds, 8 at a time
-#   ./run_parallel.sh ibm 20 8
+#   ./run_parallel.sh grid 32         # alpha/beta grid, 32 seeds, all cores
+#   ./run_parallel.sh grid 32 8       # grid, 32 seeds, 8 at a time
 
 MODE=${1:-paper}
-SEEDS=${2:-20}
-NJOBS=${3:-$(nproc)}
+IBM_FLAG=""
+if [ "$MODE" = "grid" ] && [ "$2" = "--ibm" ]; then
+    IBM_FLAG="--ibm"
+    SEEDS=${3:-32}
+    NJOBS=${4:-$(nproc)}
+else
+    SEEDS=${2:-20}
+    NJOBS=${3:-$(nproc)}
+fi
 
 mkdir -p Results logs
 
@@ -33,7 +44,7 @@ for seed in $(seq 0 $((SEEDS - 1))); do
     done
 
     echo "  launching seed $seed ($(date +%H:%M:%S))"
-    python3 FrequencyAllocationRuns.py --$MODE --seed $seed \
+    python3 FrequencyAllocationRuns.py --$MODE $IBM_FLAG --seed $seed \
         > logs/${MODE}_s${seed}.log 2>&1 &
     pids+=($!)
 done
@@ -49,6 +60,32 @@ echo "=== All seeds done ($(date +%H:%M:%S)) ==="
 if [ "$MODE" = "paper" ]; then
     echo "Merging Results/paper_s*.csv → Results/paper.csv"
     python3 FrequencyAllocationRuns.py --merge
+elif [ "$MODE" = "stress" ]; then
+    echo "Merging Results/stress_s*.csv → Results/stress.csv"
+    python3 - <<'EOF'
+import glob, pandas as pd, sys
+files = sorted(glob.glob("Results/stress_s*.csv"))
+if not files:
+    print("No per-seed files found."); sys.exit(1)
+df = pd.concat([pd.read_csv(f) for f in files], ignore_index=True)
+df = df.sort_values(["device","circuit","router","alpha","beta","seed"]).reset_index(drop=True)
+df.to_csv("Results/stress.csv", index=False)
+print(f"Merged {len(files)} files → Results/stress.csv ({len(df)} rows)")
+EOF
+elif [ "$MODE" = "grid" ]; then
+    TAG=$([ -n "$IBM_FLAG" ] && echo "ibm" || echo "snail")
+    echo "Merging Results/grid_${TAG}_s*.csv → Results/grid_${TAG}.csv"
+    python3 - <<EOF
+import glob, pandas as pd, sys
+tag = "$TAG"
+files = sorted(glob.glob(f"Results/grid_{tag}_s*.csv"))
+if not files:
+    print("No per-seed files found."); sys.exit(1)
+df = pd.concat([pd.read_csv(f) for f in files], ignore_index=True)
+df = df.sort_values(["device","circuit","router","alpha","beta","seed"]).reset_index(drop=True)
+df.to_csv(f"Results/grid_{tag}.csv", index=False)
+print(f"Merged {len(files)} files -> Results/grid_{tag}.csv ({len(df)} rows)")
+EOF
 elif [ "$MODE" = "ibm" ]; then
     echo "Merging Results/ibm_s*.csv → Results/ibm.csv"
     python3 - <<'EOF'
@@ -57,10 +94,10 @@ files = sorted(glob.glob("Results/ibm_s*.csv"))
 if not files:
     print("No per-seed files found."); sys.exit(1)
 df = pd.concat([pd.read_csv(f) for f in files], ignore_index=True)
-df = df.sort_values(["device","circuit","config","seed","wraparound"]).reset_index(drop=True)
+df = df.sort_values(["device","circuit","router","alpha","beta","seed"]).reset_index(drop=True)
 df.to_csv("Results/ibm.csv", index=False)
 print(f"Merged {len(files)} files → Results/ibm.csv ({len(df)} rows)")
-print(df.groupby(["device","config"])[["swaps","depth","lf_cost"]].mean().round(2).to_string())
+print(df.groupby(["device","router","alpha","beta"])[["swaps","depth","lf_cost"]].mean().round(2).to_string())
 EOF
 fi
 
