@@ -13,7 +13,7 @@ from __future__ import annotations
 import warnings
 
 import numpy as np
-from qiskit.circuit.library import iSwapGate, CXGate
+from qiskit.circuit.library import iSwapGate, CXGate, ECRGate
 from qiskit.quantum_info import Operator
 from qiskit.synthesis import TwoQubitBasisDecomposer
 from qiskit.synthesis.two_qubit.two_qubit_decompose import TwoQubitWeylDecomposition
@@ -28,6 +28,7 @@ with warnings.catch_warnings():
     _decomposers: dict[str, TwoQubitBasisDecomposer] = {
         'sqrt_iswap': TwoQubitBasisDecomposer(iSwapGate().power(0.5), euler_basis="ZYZ"),
         'cx':         TwoQubitBasisDecomposer(CXGate(),                euler_basis="ZYZ"),
+        'ecr':        TwoQubitBasisDecomposer(ECRGate(),               euler_basis="ZYZ"),
     }
 
 SUPPORTED_BASIS_GATES = tuple(_decomposers.keys())
@@ -68,7 +69,7 @@ def decomp_cost(U: np.ndarray, basis_gate: str = 'sqrt_iswap') -> int:
 
     Args:
         U:          4×4 unitary matrix.
-        basis_gate: Native 2Q gate. Supported: 'sqrt_iswap', 'cx'.
+        basis_gate: Native 2Q gate. Supported: 'sqrt_iswap', 'cx', 'ecr'.
     """
     return _decomposers[basis_gate].num_basis_gates(U)
 

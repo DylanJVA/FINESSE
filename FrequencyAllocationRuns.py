@@ -96,7 +96,7 @@ def _ibm_topology(backend_name: str):
     # routes through them and lf_cost stays finite for all runs.
     live_edges = [(i, j) for i, j in backend.coupling_map.get_edges() if F[i, j] > 0]
     cm = CouplingMap(live_edges)
-    return (backend_name, cm, F)
+    return (backend_name, cm, F, gate)
 
 def build_ibm_topologies():
     """IBM backend for benchmarking.
@@ -182,10 +182,10 @@ def build_topology(wraparound=False):
     cm_full = CouplingMap([[i,j] for i in range(n) for j in range(n) if F_full[i,j]      > 0])
     cm_pent = CouplingMap([[i,j] for i in range(n) for j in range(n) if F_pent[i,j]      > 0])
     return [
-        ("square_ring",      cm_ring, F_ring),
-        ("square_ring_diag", cm_diag, F_diag),
-        ("square_ring_full", cm_full, F_full),
-        ("pentagon_ring",    cm_pent, F_pent)
+        ("square_ring",      cm_ring, F_ring, 'sqrt_iswap'),
+        ("square_ring_diag", cm_diag, F_diag, 'sqrt_iswap'),
+        ("square_ring_full", cm_full, F_full, 'sqrt_iswap'),
+        ("pentagon_ring",    cm_pent, F_pent, 'sqrt_iswap'),
     ]
 
 # ── Configs ───────────────────────────────────────────────────────────────────
@@ -209,7 +209,7 @@ def make_qaoa(n_qubits, p_layers):
     return qc
 
 # ── Benchmark runner ──────────────────────────────────────────────────────────
-def run_circuits(circuit_list, seed_list, label, out_path=None, wraparound=False, basis_gate='sqrt_iswap', devices=None):
+def run_circuits(circuit_list, seed_list, label, out_path=None, wraparound=False, devices=None):
     """
     circuit_list: list of (name, QuantumCircuit | qasm_filename_str)
     seed_list:    list of integer seeds to run (e.g. [0] for a single-seed parallel job)
@@ -228,7 +228,7 @@ def run_circuits(circuit_list, seed_list, label, out_path=None, wraparound=False
         writer.writeheader()
 
     rows = []
-    for dev_name, cm, F in devices:
+    for dev_name, cm, F, basis_gate in devices:
         n_phys = cm.size()
         for circ_name, circ_src in circuit_list:
             with warnings.catch_warnings():
@@ -379,11 +379,9 @@ if __name__ == "__main__":
     if args.grid:
         if args.ibm:
             devs = build_ibm_topologies()
-            basis_gate = 'cx'
             out_file = "Results/grid_ibm.csv"
         else:
             devs = build_topology(wraparound=False)
-            basis_gate = 'sqrt_iswap'
             out_file = "Results/grid_snail.csv"
 
         grid_circuits = [
@@ -396,23 +394,14 @@ if __name__ == "__main__":
         ]
 
         # α=1 fixed; sweep β. Last entry is pure-fidelity ablation (α=0).
-        grid_configs = [
-            ("SABRE",   dict(mode="lightsabre", aggression=0)),
-            ("FINESSE", dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=1.0, beta=0.0)),
-            ("FINESSE", dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=1.0, beta=0.1)),
-            ("FINESSE", dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=1.0, beta=0.5)),
-            ("FINESSE", dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=1.0, beta=1.0)),
-            ("FINESSE", dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=1.0, beta=2.0)),
-            ("FINESSE", dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=1.0, beta=5.0)),
-            ("FINESSE", dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=1.0, beta=10.0)),
-            ("FINESSE", dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=1.0, beta=25.0)),
-            ("FINESSE", dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=1.0, beta=50.0)),
-            ("FINESSE", dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=1.0, beta=100.0)),
-            ("FINESSE", dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=1.0, beta=250.0)),
-            ("FINESSE", dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=1.0, beta=500.0)),
-            ("FINESSE", dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=1.0, beta=1000.0)),
-            ("FINESSE", dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=0.0, beta=1.0)),
-        ]
+        # 40 log-spaced values from 0.1 to 1000, plus β=0 (hop-count only).
+        grid_betas = [0.0] + [round(float(b), 4) for b in np.logspace(-1, 3, 40)]
+        grid_configs = (
+            [("SABRE", dict(mode="lightsabre", aggression=0))]
+            + [("FINESSE", dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=1.0, beta=b))
+               for b in grid_betas]
+            + [("FINESSE", dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=0.0, beta=1.0))]
+        )
         configs[:] = grid_configs
         FIDELITY_CONFIGS.clear(); FIDELITY_CONFIGS.add("FINESSE")
 
@@ -424,7 +413,7 @@ if __name__ == "__main__":
             n_seeds = args.seeds if args.seeds is not None else 5
             seed_list = list(range(n_seeds))
         df = run_circuits(grid_circuits, seed_list=seed_list, label="grid",
-                          out_path=out_file, wraparound=False, basis_gate=basis_gate, devices=devs)
+                          out_path=out_file, wraparound=False, devices=devs)
 
         # Post-selection summary: best seed per (device, circuit, router, alpha, beta)
         # Native: SABRE→min_swaps, FINESSE→min_lf_cost
@@ -491,11 +480,9 @@ if __name__ == "__main__":
     if args.compare:
         if args.ibm:
             devs = build_ibm_topologies()
-            basis_gate = 'cx'
             out_file = "compare_ibm.csv"
         else:
             devs = build_topology(wraparound=False)
-            basis_gate = 'sqrt_iswap'
             out_file = "compare_check.csv"
         quick_circuits = [
             ("adder_n10",      fetch_qasmbench("adder_n10",      size="small")),
@@ -515,7 +502,7 @@ if __name__ == "__main__":
         FIDELITY_CONFIGS.clear(); FIDELITY_CONFIGS.update(FIDELITY_COMPARE)
         n_seeds = args.seeds if args.seeds is not None else 5
         df = run_circuits(quick_circuits, seed_list=list(range(n_seeds)), label="compare",
-                          out_path=out_file, wraparound=False, basis_gate=basis_gate, devices=devs)
+                          out_path=out_file, wraparound=False, devices=devs)
         print(df.groupby(["device", "router", "alpha", "beta"])[["swaps", "depth", "lf_cost"]].mean().round(3))
         import sys; sys.exit(0)
 
@@ -531,13 +518,14 @@ if __name__ == "__main__":
         out_path = f"{args.output}.csv" if args.output else (
             f"Results/ibm_s{args.seed}.csv" if args.seed is not None else "Results/ibm.csv"
         )
-        for backend_name, cm, F in build_ibm_topologies():
+        for dev in build_ibm_topologies():
+            backend_name, cm, F, dev_gate = dev
             n_phys = cm.size()
             circuits = [(name, qc) for name, qc in all_circuits if qc.num_qubits <= n_phys]
             print(f"=== IBM {backend_name} ({n_phys}q, {len(circuits)} circuits, seeds={seed_list}) ===")
             run_circuits(circuits, seed_list=seed_list, label="ibm",
-                         out_path=out_path, wraparound=False, basis_gate='cx',
-                         devices=[(backend_name, cm, F)])
+                         out_path=out_path, wraparound=False,
+                         devices=[dev])
         df = pd.read_csv(out_path)
         ran = {n for n, _ in all_circuits}
         df = df[df["circuit"].isin(ran)]
@@ -636,7 +624,7 @@ if __name__ == "__main__":
         devs = all_devices
     else:
         requested = {t.strip() for t in args.topology.split(",")}
-        devs = [(name, cm, F) for name, cm, F in all_devices if name in requested]
+        devs = [d for d in all_devices if d[0] in requested]
         if not devs:
             parser.error(f"No matching topologies found. Available: {[d[0] for d in all_devices]}")
     if args.wraparound:
