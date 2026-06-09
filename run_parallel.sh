@@ -14,7 +14,7 @@
 
 MODE=${1:-paper}
 IBM_FLAG=""
-if [ "$MODE" = "grid" ] && [ "$2" = "--ibm" ]; then
+if [[ "$MODE" = "grid" || "$MODE" = "dense" ]] && [ "$2" = "--ibm" ]; then
     IBM_FLAG="--ibm"
     SEEDS=${3:-32}
     NJOBS=${4:-$(nproc)}
@@ -98,6 +98,20 @@ df = df.sort_values(["device","circuit","router","alpha","beta","seed"]).reset_i
 df.to_csv("Results/ibm.csv", index=False)
 print(f"Merged {len(files)} files → Results/ibm.csv ({len(df)} rows)")
 print(df.groupby(["device","router","alpha","beta"])[["swaps","depth","lf_cost"]].mean().round(2).to_string())
+EOF
+elif [ "$MODE" = "dense" ]; then
+    TAG=$([ -n "$IBM_FLAG" ] && echo "ibm" || echo "snail")
+    echo "Merging Results/dense_${TAG}_s*.csv → Results/dense_${TAG}.csv"
+    python3 - <<EOF
+import glob, pandas as pd, sys
+tag = "$TAG"
+files = sorted(glob.glob(f"Results/dense_{tag}_s*.csv"))
+if not files:
+    print("No per-seed files found."); sys.exit(1)
+df = pd.concat([pd.read_csv(f) for f in files], ignore_index=True)
+df = df.sort_values(["device","circuit","router","alpha","beta","seed"]).reset_index(drop=True)
+df.to_csv(f"Results/dense_{tag}.csv", index=False)
+print(f"Merged {len(files)} files -> Results/dense_{tag}.csv ({len(df)} rows)")
 EOF
 fi
 

@@ -343,6 +343,9 @@ if __name__ == "__main__":
     parser.add_argument("--grid",       action="store_true",
                         help="Grid search over (alpha, beta) on a small circuit subset. "
                              "Use --ibm for IBM topologies, --seeds N to change seed count.")
+    parser.add_argument("--dense",      action="store_true",
+                        help="High-resolution beta sweep for qft_n24 with many seeds. "
+                             "Use --ibm for IBM topologies, --seeds N to change seed count (default 100).")
     args = parser.parse_args()
 
     if args.qasm:
@@ -475,6 +478,38 @@ if __name__ == "__main__":
                 pct_lf  = 100 * (sub_lf[common]  - sl[common]) / sl[common]
                 print(f"  {label:<16}  {pct_nat.mean():>+9.1f}%  {pct_lf.mean():>+9.1f}%")
 
+        import sys; sys.exit(0)
+
+    if args.dense:
+        if args.ibm:
+            devs = build_ibm_topologies()
+            tag = "ibm"
+        else:
+            devs = build_topology(wraparound=False)
+            tag = "snail"
+
+        dense_circuit = [("qft_n24", _mqt("qft", 24, "indep"))]
+
+        # 80 log-spaced beta values from 0.1 to 1000, plus β=0
+        dense_betas = [0.0] + [round(float(b), 4) for b in np.logspace(-1, 3, 80)]
+        dense_configs = (
+            [("SABRE", dict(mode="lightsabre", aggression=0))]
+            + [("FINESSE", dict(mode="lightsabre", aggression=2, fidelity_mirror=True, alpha=1.0, beta=b))
+               for b in dense_betas]
+        )
+        configs[:] = dense_configs
+        FIDELITY_CONFIGS.clear(); FIDELITY_CONFIGS.add("FINESSE")
+
+        if args.seed is not None:
+            seed_list = [args.seed]
+            out_file = f"Results/dense_{tag}_s{args.seed}.csv"
+        else:
+            n_seeds = args.seeds if args.seeds is not None else 100
+            seed_list = list(range(n_seeds))
+            out_file = f"Results/dense_{tag}.csv"
+
+        run_circuits(dense_circuit, seed_list=seed_list, label="dense",
+                     out_path=out_file, wraparound=False, devices=devs)
         import sys; sys.exit(0)
 
     if args.compare:
