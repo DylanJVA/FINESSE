@@ -364,9 +364,6 @@ if __name__ == "__main__":
     parser.add_argument("--transpile",  action="store_true",
                         help="Benchmark finesse_transpile() vs SABRE on the paper circuit suite. "
                              "Use --ibm for IBM topology, --seeds N to change seed count (default 20).")
-    parser.add_argument("--finesse-seeds", type=int, default=5, dest="finesse_seeds",
-                        help="Number of seeds to run FINESSE_AUTO (default 5). "
-                             "SABRE always runs all --seeds. Remaining seeds run SABRE only.")
     args = parser.parse_args()
 
     if args.qasm:
@@ -547,29 +544,22 @@ if __name__ == "__main__":
             if not transpile_circuits:
                 parser.error(f"Circuit '{args.circuit}' not in paper suite.")
 
-        n_seeds   = args.seeds if args.seeds is not None else 20
-        n_finesse = min(args.finesse_seeds, n_seeds)
-
-        # SABRE runs all seeds (post-select best = optimization_level=2).
-        # FINESSE_AUTO runs only the first n_finesse seeds (each call already
-        # does 21 internal trials; a few outer seeds show variance is small).
-        sabre_only    = [("SABRE", dict(mode="lightsabre", aggression=0))]
-        sabre_finesse = sabre_only + [("FINESSE_AUTO", dict())]
+        n_sabre = args.seeds if args.seeds is not None else 20
+        out_file = f"Results/transpile_{tag}.csv"
         FIDELITY_CONFIGS.clear()  # FINESSE_AUTO handled directly in run_circuits()
 
-        if args.seed is not None:
-            seed_list = [args.seed]
-            out_file  = f"Results/transpile_{tag}_s{args.seed}.csv"
-            configs[:] = sabre_finesse if args.seed < n_finesse else sabre_only
-        else:
-            seed_list  = list(range(n_seeds))
-            out_file   = f"Results/transpile_{tag}.csv"
-            configs[:] = sabre_finesse  # multi-seed direct run: include both
-
-        print(f"=== TRANSPILE ({len(transpile_circuits)} circuits, seeds={seed_list}, "
-              f"SABRE seeds={n_seeds}, FINESSE seeds={n_finesse}, tag={tag}) ===")
-        run_circuits(transpile_circuits, seed_list=seed_list, label="transpile",
+        # SABRE: 20 seeds, post-select best at plot time (= optimization_level=2)
+        configs[:] = [("SABRE", dict(mode="lightsabre", aggression=0))]
+        print(f"=== TRANSPILE SABRE ({len(transpile_circuits)} circuits, {n_sabre} seeds, tag={tag}) ===")
+        run_circuits(transpile_circuits, seed_list=list(range(n_sabre)), label="transpile",
                      out_path=out_file, wraparound=False, devices=devs)
+
+        # FINESSE_AUTO: single call, 21 internal trials (β grid + warmup layout)
+        configs[:] = [("FINESSE_AUTO", dict())]
+        print(f"=== TRANSPILE FINESSE_AUTO ({len(transpile_circuits)} circuits, 21 trials, tag={tag}) ===")
+        run_circuits(transpile_circuits, seed_list=[0], label="transpile",
+                     out_path=out_file, wraparound=False, devices=devs)
+
         import sys; sys.exit(0)
 
     if args.compare:
