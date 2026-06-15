@@ -1,20 +1,23 @@
 #!/bin/bash
 # Usage:
-#   ./run_parallel.sh paper      [seeds] [jobs]
-#   ./run_parallel.sh stress     [seeds] [jobs]
-#   ./run_parallel.sh ibm        [seeds] [jobs]
-#   ./run_parallel.sh grid       [seeds] [jobs]
-#   ./run_parallel.sh grid --ibm [seeds] [jobs]
+#   ./run_parallel.sh paper           [seeds] [jobs]
+#   ./run_parallel.sh stress          [seeds] [jobs]
+#   ./run_parallel.sh ibm             [seeds] [jobs]
+#   ./run_parallel.sh grid            [seeds] [jobs]
+#   ./run_parallel.sh grid  --ibm     [seeds] [jobs]
+#   ./run_parallel.sh dense --ibm     [seeds] [jobs]
+#   ./run_parallel.sh transpile       [seeds] [jobs]
+#   ./run_parallel.sh transpile --ibm [seeds] [jobs]
 #
 # Examples:
-#   ./run_parallel.sh paper           # 20 seeds, all cores
-#   ./run_parallel.sh paper 20 8      # 20 seeds, 8 at a time
-#   ./run_parallel.sh grid 32         # alpha/beta grid, 32 seeds, all cores
-#   ./run_parallel.sh grid 32 8       # grid, 32 seeds, 8 at a time
+#   ./run_parallel.sh paper              # 20 seeds, all cores
+#   ./run_parallel.sh paper 20 8         # 20 seeds, 8 at a time
+#   ./run_parallel.sh grid 32            # alpha/beta grid, 32 seeds, all cores
+#   ./run_parallel.sh transpile 20 8     # finesse_transpile vs SABRE, 20 seeds, 8 jobs
 
 MODE=${1:-paper}
 IBM_FLAG=""
-if [[ "$MODE" = "grid" || "$MODE" = "dense" ]] && [ "$2" = "--ibm" ]; then
+if [[ "$MODE" = "grid" || "$MODE" = "dense" || "$MODE" = "transpile" ]] && [ "$2" = "--ibm" ]; then
     IBM_FLAG="--ibm"
     SEEDS=${3:-32}
     NJOBS=${4:-$(nproc)}
@@ -112,6 +115,20 @@ df = pd.concat([pd.read_csv(f) for f in files], ignore_index=True)
 df = df.sort_values(["device","circuit","router","alpha","beta","seed"]).reset_index(drop=True)
 df.to_csv(f"Results/dense_{tag}.csv", index=False)
 print(f"Merged {len(files)} files -> Results/dense_{tag}.csv ({len(df)} rows)")
+EOF
+elif [ "$MODE" = "transpile" ]; then
+    TAG=$([ -n "$IBM_FLAG" ] && echo "ibm" || echo "snail")
+    echo "Merging Results/transpile_${TAG}_s*.csv → Results/transpile_${TAG}.csv"
+    python3 - <<EOF
+import glob, pandas as pd, sys
+tag = "$TAG"
+files = sorted(glob.glob(f"Results/transpile_{tag}_s*.csv"))
+if not files:
+    print("No per-seed files found."); sys.exit(1)
+df = pd.concat([pd.read_csv(f) for f in files], ignore_index=True)
+df = df.sort_values(["device","circuit","router","alpha","beta","seed"]).reset_index(drop=True)
+df.to_csv(f"Results/transpile_{tag}.csv", index=False)
+print(f"Merged {len(files)} files -> Results/transpile_{tag}.csv ({len(df)} rows)")
 EOF
 fi
 

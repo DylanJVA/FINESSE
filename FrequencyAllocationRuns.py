@@ -7,11 +7,12 @@ import numpy as np
 import pandas as pd
 from qiskit import QuantumCircuit
 from qiskit.circuit.random import random_circuit
+from qiskit.converters import circuit_to_dag
 from qiskit.transpiler import CouplingMap
 
 from finesse import (
     apply_trivial_layout, fetch_qasm, fetch_qasmbench,
-    circuit_lf_cost, swap_count,
+    circuit_lf_cost, swap_count, finesse_transpile,
 )
 from finesse.routing import route
 
@@ -219,7 +220,7 @@ def run_circuits(circuit_list, seed_list, label, out_path=None, wraparound=False
     """
     if out_path is None:
         out_path = f"results_{label}.csv"
-    fieldnames = ["device", "circuit", "router", "alpha", "beta", "seed", "swaps", "depth", "lf_cost"]
+    fieldnames = ["device", "circuit", "router", "beta", "seed", "swaps", "depth", "lf_cost"]
 
     write_header = not os.path.exists(out_path) or os.path.getsize(out_path) == 0
     out_file = open(out_path, "a", newline="")
@@ -248,19 +249,33 @@ def run_circuits(circuit_list, seed_list, label, out_path=None, wraparound=False
                 if cfg_name in FIDELITY_CONFIGS:
                     kw["fidelity_matrix"] = F
                 for seed in seed_list:
-                    rng = np.random.default_rng(seed + 10_000)
-                    initial_cur = rng.permutation(n_phys).tolist()
                     with warnings.catch_warnings():
                         warnings.simplefilter("ignore")
-                        routed, _, _ = route(
-                            copy.deepcopy(dag_phys), cm,
-                            seed=seed, initial_cur=initial_cur, **kw,
-                        )
+                        if cfg_name == "FINESSE_AUTO":
+                            qc_out, chosen_beta = finesse_transpile(
+                                qc, cm, F,
+                                basis_gate=basis_gate,
+                                betas=kwargs.get("betas", None),
+                                seed=seed,
+                            )
+                            routed = circuit_to_dag(qc_out)
+                        else:
+                            rng = np.random.default_rng(seed + 10_000)
+                            initial_cur = rng.permutation(n_phys).tolist()
+                            routed, _, _ = route(
+                                copy.deepcopy(dag_phys), cm,
+                                seed=seed, initial_cur=initial_cur, **kw,
+                            )
+                    if cfg_name == "FINESSE_AUTO":
+                        row_beta = chosen_beta
+                    elif kwargs.get("alpha") == 0.0:
+                        row_beta = float('inf')
+                    else:
+                        row_beta = kwargs.get("beta", np.nan)
                     row = dict(
                         device=dev_name, circuit=circ_name,
                         router=cfg_name,
-                        alpha=kwargs.get("alpha", np.nan),
-                        beta=kwargs.get("beta", np.nan),
+                        beta=row_beta,
                         seed=seed,
                         swaps=swap_count(routed),
                         depth=routed.depth(),
@@ -346,6 +361,9 @@ if __name__ == "__main__":
     parser.add_argument("--dense",      action="store_true",
                         help="High-resolution beta sweep for qft_n24 with many seeds. "
                              "Use --ibm for IBM topologies, --seeds N to change seed count (default 100).")
+    parser.add_argument("--transpile",  action="store_true",
+                        help="Benchmark finesse_transpile() vs SABRE on the paper circuit suite. "
+                             "Use --ibm for IBM topology, --seeds N to change seed count (default 20).")
     args = parser.parse_args()
 
     if args.qasm:
@@ -363,7 +381,7 @@ if __name__ == "__main__":
             run_circuits(circuits, seed_list=seed_list, label=name,
                          out_path=out_path, wraparound=wrap)
         df = pd.read_csv(out_path)
-        print(df.groupby(["device", "router", "alpha", "beta"])[["swaps", "depth", "lf_cost"]].mean().round(2))
+        print(df.groupby(["device", "router", "beta"])[["swaps", "depth", "lf_cost"]].mean().round(2))
         import sys; sys.exit(0)
 
     if args.merge:
@@ -373,7 +391,7 @@ if __name__ == "__main__":
             print("No per-seed files found matching Results/paper_s*.csv")
             import sys; sys.exit(1)
         df = pd.concat([pd.read_csv(f) for f in files], ignore_index=True)
-        df = df.sort_values(["device","circuit","router","alpha","beta","seed"]).reset_index(drop=True)
+        df = df.sort_values(["device","circuit","router","beta","seed"]).reset_index(drop=True)
         df.to_csv("Results/paper.csv", index=False)
         print(f"Merged {len(files)} files → Results/paper.csv ({len(df)} rows)")
         print(df.groupby(["device","router","alpha","beta"])[["swaps","depth","lf_cost"]].mean().round(2))
@@ -418,10 +436,10 @@ if __name__ == "__main__":
         df = run_circuits(grid_circuits, seed_list=seed_list, label="grid",
                           out_path=out_file, wraparound=False, devices=devs)
 
-        # Post-selection summary: best seed per (device, circuit, router, alpha, beta)
+        # Post-selection summary: best seed per (device, circuit, router, beta)
         # Native: SABRE→min_swaps, FINESSE→min_lf_cost
         # LF:     all→min_lf_cost
-        group_keys = ["device", "circuit", "router", "alpha", "beta"]
+        group_keys = ["device", "circuit", "router", "beta"]
         nat_frames, lf_frames = [], []
         for keys, sub in df.groupby(group_keys, dropna=False):
             router_name = keys[2]
@@ -431,31 +449,31 @@ if __name__ == "__main__":
         ps_nat = pd.concat(nat_frames)
         ps_lf  = pd.concat(lf_frames)
 
-        def _get(ps, router, alpha, beta):
+        def _get(ps, router, beta):
             m = ps[ps.router == router]
-            if not np.isnan(alpha): m = m[m.alpha == alpha]
-            if not np.isnan(beta):  m = m[m.beta  == beta]
+            if beta is not None and not (isinstance(beta, float) and np.isnan(beta)):
+                m = m[m.beta == beta]
             return m.set_index(["device", "circuit"])["lf_cost"]
 
-        sabre_nat = _get(ps_nat, "SABRE", np.nan, np.nan)
-        sabre_lf  = _get(ps_lf,  "SABRE", np.nan, np.nan)
+        sabre_nat = _get(ps_nat, "SABRE", np.nan)
+        sabre_lf  = _get(ps_lf,  "SABRE", np.nan)
 
-        # Build ordered list of (label, router, alpha, beta) for display
+        # Build ordered list of (label, router, beta) for display
+        # alpha=0 configs are stored as beta=inf
         seen, display_configs = set(), []
         for rtr, kw in grid_configs:
-            a, b = kw.get("alpha", np.nan), kw.get("beta", np.nan)
-            key = (rtr, a, b)
-            if key not in seen:
-                seen.add(key)
-                label = rtr if rtr == "SABRE" else f"a={a} b={b}"
-                display_configs.append((label, rtr, a, b))
+            b = float('inf') if kw.get("alpha") == 0.0 else kw.get("beta", np.nan)
+            if (rtr, b) not in seen:
+                seen.add((rtr, b))
+                label = rtr if rtr == "SABRE" else ("b=inf" if np.isinf(b) else f"b={b}")
+                display_configs.append((label, rtr, b))
 
         print("\n=== Grid search: FINESSE vs SABRE  (mean % over circuits/devices) ===")
         print(f"{'config':<16}  {'native ps':>10}  {'lf ps':>10}")
         print("-" * 42)
-        for label, rtr, a, b in display_configs:
-            sub_nat = _get(ps_nat, rtr, a, b)
-            sub_lf  = _get(ps_lf,  rtr, a, b)
+        for label, rtr, b in display_configs:
+            sub_nat = _get(ps_nat, rtr, b)
+            sub_lf  = _get(ps_lf,  rtr, b)
             common  = sabre_nat.index.intersection(sub_nat.index)
             pct_nat = 100 * (sub_nat[common] - sabre_nat[common]) / sabre_nat[common]
             pct_lf  = 100 * (sub_lf[common]  - sabre_lf[common])  / sabre_lf[common]
@@ -467,9 +485,9 @@ if __name__ == "__main__":
             print(f"  {'config':<16}  {'native ps':>10}  {'lf ps':>10}")
             sn = sabre_nat[sabre_nat.index.get_level_values("device") == dev].droplevel("device")
             sl = sabre_lf[sabre_lf.index.get_level_values("device")  == dev].droplevel("device")
-            for label, rtr, a, b in display_configs:
-                sub_nat = _get(ps_nat, rtr, a, b)
-                sub_lf  = _get(ps_lf,  rtr, a, b)
+            for label, rtr, b in display_configs:
+                sub_nat = _get(ps_nat, rtr, b)
+                sub_lf  = _get(ps_lf,  rtr, b)
                 sub_nat = sub_nat[sub_nat.index.get_level_values("device") == dev].droplevel("device")
                 sub_lf  = sub_lf[sub_lf.index.get_level_values("device")  == dev].droplevel("device")
                 common  = sn.index.intersection(sub_nat.index)
@@ -512,6 +530,40 @@ if __name__ == "__main__":
                      out_path=out_file, wraparound=False, devices=devs)
         import sys; sys.exit(0)
 
+    if args.transpile:
+        if args.ibm:
+            devs = build_ibm_topologies()
+            tag = "ibm"
+        else:
+            devs = build_topology(wraparound=False)
+            tag = "snail"
+
+        transpile_circuits = build_paper_circuits()
+        if args.circuit:
+            transpile_circuits = [(n, c) for n, c in transpile_circuits if n == args.circuit]
+            if not transpile_circuits:
+                parser.error(f"Circuit '{args.circuit}' not in paper suite.")
+
+        transpile_configs = [
+            ("SABRE",        dict(mode="lightsabre", aggression=0)),
+            ("FINESSE_AUTO", dict(budget=20)),
+        ]
+        configs[:] = transpile_configs
+        FIDELITY_CONFIGS.clear()  # FINESSE_AUTO handled directly in run_circuits()
+
+        if args.seed is not None:
+            seed_list = [args.seed]
+            out_file = f"Results/transpile_{tag}_s{args.seed}.csv"
+        else:
+            n_seeds = args.seeds if args.seeds is not None else 20
+            seed_list = list(range(n_seeds))
+            out_file = f"Results/transpile_{tag}.csv"
+
+        print(f"=== TRANSPILE ({len(transpile_circuits)} circuits, seeds={seed_list}, tag={tag}) ===")
+        run_circuits(transpile_circuits, seed_list=seed_list, label="transpile",
+                     out_path=out_file, wraparound=False, devices=devs)
+        import sys; sys.exit(0)
+
     if args.compare:
         if args.ibm:
             devs = build_ibm_topologies()
@@ -538,7 +590,7 @@ if __name__ == "__main__":
         n_seeds = args.seeds if args.seeds is not None else 5
         df = run_circuits(quick_circuits, seed_list=list(range(n_seeds)), label="compare",
                           out_path=out_file, wraparound=False, devices=devs)
-        print(df.groupby(["device", "router", "alpha", "beta"])[["swaps", "depth", "lf_cost"]].mean().round(3))
+        print(df.groupby(["device", "router", "beta"])[["swaps", "depth", "lf_cost"]].mean().round(3))
         import sys; sys.exit(0)
 
     if args.ibm:
@@ -564,7 +616,7 @@ if __name__ == "__main__":
         df = pd.read_csv(out_path)
         ran = {n for n, _ in all_circuits}
         df = df[df["circuit"].isin(ran)]
-        print(df.groupby(["device", "router", "alpha", "beta"])[["swaps", "depth", "lf_cost"]].mean().round(2))
+        print(df.groupby(["device", "router", "beta"])[["swaps", "depth", "lf_cost"]].mean().round(2))
         import sys; sys.exit(0)
 
     if args.paper:
@@ -589,7 +641,7 @@ if __name__ == "__main__":
         df = pd.read_csv(out_path)
         ran = {n for n, _ in paper_circuits}
         df = df[df["circuit"].isin(ran)]
-        print(df.groupby(["device", "router", "alpha", "beta"])[["swaps", "depth", "lf_cost"]].mean().round(2))
+        print(df.groupby(["device", "router", "beta"])[["swaps", "depth", "lf_cost"]].mean().round(2))
         import sys; sys.exit(0)
 
     if args.stress:
@@ -615,7 +667,7 @@ if __name__ == "__main__":
         df = pd.read_csv(out_path)
         ran = {n for n, _ in stress_circuits}
         df = df[df["circuit"].isin(ran)]
-        print(df.groupby(["device", "router", "alpha", "beta"])[["swaps", "depth", "lf_cost"]].mean().round(2))
+        print(df.groupby(["device", "router", "beta"])[["swaps", "depth", "lf_cost"]].mean().round(2))
         import sys; sys.exit(0)
 
     if args.quick:

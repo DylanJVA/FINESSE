@@ -3,6 +3,7 @@
 # ── Routing ───────────────────────────────────────────────────────────────────
 from .routing     import route
 from .inline_pass import InlineMirageSwap
+from .transpile   import finesse_transpile
 
 # ── Qiskit pipeline passes ────────────────────────────────────────────────────
 from .layout import FinesseLayout
@@ -34,6 +35,7 @@ from .benchmarks import (
 __all__ = [
     "route",
     "InlineMirageSwap",
+    "finesse_transpile",
     "FinesseLayout",
     "MirageDecompose",
     "make_unroll_consolidate",
