@@ -71,7 +71,7 @@ files = sorted(glob.glob("Results/stress_s*.csv"))
 if not files:
     print("No per-seed files found."); sys.exit(1)
 df = pd.concat([pd.read_csv(f) for f in files], ignore_index=True)
-df = df.sort_values(["device","circuit","router","alpha","beta","seed"]).reset_index(drop=True)
+df = df.sort_values(["device","circuit","router","beta","seed"]).reset_index(drop=True)
 df.to_csv("Results/stress.csv", index=False)
 print(f"Merged {len(files)} files → Results/stress.csv ({len(df)} rows)")
 EOF
@@ -85,7 +85,7 @@ files = sorted(glob.glob(f"Results/grid_{tag}_s*.csv"))
 if not files:
     print("No per-seed files found."); sys.exit(1)
 df = pd.concat([pd.read_csv(f) for f in files], ignore_index=True)
-df = df.sort_values(["device","circuit","router","alpha","beta","seed"]).reset_index(drop=True)
+df = df.sort_values(["device","circuit","router","beta","seed"]).reset_index(drop=True)
 df.to_csv(f"Results/grid_{tag}.csv", index=False)
 print(f"Merged {len(files)} files -> Results/grid_{tag}.csv ({len(df)} rows)")
 EOF
@@ -97,10 +97,10 @@ files = sorted(glob.glob("Results/ibm_s*.csv"))
 if not files:
     print("No per-seed files found."); sys.exit(1)
 df = pd.concat([pd.read_csv(f) for f in files], ignore_index=True)
-df = df.sort_values(["device","circuit","router","alpha","beta","seed"]).reset_index(drop=True)
+df = df.sort_values(["device","circuit","router","beta","seed"]).reset_index(drop=True)
 df.to_csv("Results/ibm.csv", index=False)
 print(f"Merged {len(files)} files → Results/ibm.csv ({len(df)} rows)")
-print(df.groupby(["device","router","alpha","beta"])[["swaps","depth","lf_cost"]].mean().round(2).to_string())
+print(df.groupby(["device","router","beta"])[["swaps","depth","lf_cost"]].mean().round(2).to_string())
 EOF
 elif [ "$MODE" = "dense" ]; then
     TAG=$([ -n "$IBM_FLAG" ] && echo "ibm" || echo "snail")
@@ -112,7 +112,7 @@ files = sorted(glob.glob(f"Results/dense_{tag}_s*.csv"))
 if not files:
     print("No per-seed files found."); sys.exit(1)
 df = pd.concat([pd.read_csv(f) for f in files], ignore_index=True)
-df = df.sort_values(["device","circuit","router","alpha","beta","seed"]).reset_index(drop=True)
+df = df.sort_values(["device","circuit","router","beta","seed"]).reset_index(drop=True)
 df.to_csv(f"Results/dense_{tag}.csv", index=False)
 print(f"Merged {len(files)} files -> Results/dense_{tag}.csv ({len(df)} rows)")
 EOF
@@ -126,7 +126,7 @@ files = sorted(glob.glob(f"Results/transpile_{tag}_s*.csv"))
 if not files:
     print("No per-seed files found."); sys.exit(1)
 df = pd.concat([pd.read_csv(f) for f in files], ignore_index=True)
-df = df.sort_values(["device","circuit","router","alpha","beta","seed"]).reset_index(drop=True)
+df = df.sort_values(["device","circuit","router","beta","seed"]).reset_index(drop=True)
 df.to_csv(f"Results/transpile_{tag}.csv", index=False)
 print(f"Merged {len(files)} files -> Results/transpile_{tag}.csv ({len(df)} rows)")
 EOF
