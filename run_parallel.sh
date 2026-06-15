@@ -130,6 +130,8 @@ df = df.sort_values(["device","circuit","router","beta","seed"]).reset_index(dro
 df.to_csv(f"Results/transpile_{tag}.csv", index=False)
 print(f"Merged {len(files)} files -> Results/transpile_{tag}.csv ({len(df)} rows)")
 EOF
+    echo "Running FINESSE_AUTO (21 trials, single call)..."
+    python3 FrequencyAllocationRuns.py --transpile $IBM_FLAG --finesse-only
 fi
 
 echo "Done. Check logs/ for per-seed output."

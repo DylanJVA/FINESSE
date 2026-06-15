@@ -361,9 +361,12 @@ if __name__ == "__main__":
     parser.add_argument("--dense",      action="store_true",
                         help="High-resolution beta sweep for qft_n24 with many seeds. "
                              "Use --ibm for IBM topologies, --seeds N to change seed count (default 100).")
-    parser.add_argument("--transpile",  action="store_true",
+    parser.add_argument("--transpile",    action="store_true",
                         help="Benchmark finesse_transpile() vs SABRE on the paper circuit suite. "
                              "Use --ibm for IBM topology, --seeds N to change seed count (default 20).")
+    parser.add_argument("--finesse-only", action="store_true", dest="finesse_only",
+                        help="Run FINESSE_AUTO once and append to the existing transpile CSV. "
+                             "Called automatically by run_parallel.sh after SABRE seeds are merged.")
     args = parser.parse_args()
 
     if args.qasm:
@@ -544,21 +547,32 @@ if __name__ == "__main__":
             if not transpile_circuits:
                 parser.error(f"Circuit '{args.circuit}' not in paper suite.")
 
-        n_sabre = args.seeds if args.seeds is not None else 20
+        n_sabre  = args.seeds if args.seeds is not None else 20
         out_file = f"Results/transpile_{tag}.csv"
         FIDELITY_CONFIGS.clear()  # FINESSE_AUTO handled directly in run_circuits()
 
-        # SABRE: 20 seeds, post-select best at plot time (= optimization_level=2)
-        configs[:] = [("SABRE", dict(mode="lightsabre", aggression=0))]
-        print(f"=== TRANSPILE SABRE ({len(transpile_circuits)} circuits, {n_sabre} seeds, tag={tag}) ===")
-        run_circuits(transpile_circuits, seed_list=list(range(n_sabre)), label="transpile",
-                     out_path=out_file, wraparound=False, devices=devs)
-
-        # FINESSE_AUTO: single call, 21 internal trials (β grid + warmup layout)
-        configs[:] = [("FINESSE_AUTO", dict())]
-        print(f"=== TRANSPILE FINESSE_AUTO ({len(transpile_circuits)} circuits, 21 trials, tag={tag}) ===")
-        run_circuits(transpile_circuits, seed_list=[0], label="transpile",
-                     out_path=out_file, wraparound=False, devices=devs)
+        if args.finesse_only:
+            # Step 2: append FINESSE_AUTO to the already-merged transpile CSV
+            configs[:] = [("FINESSE_AUTO", dict())]
+            print(f"=== TRANSPILE FINESSE_AUTO ({len(transpile_circuits)} circuits, 21 trials, tag={tag}) ===")
+            run_circuits(transpile_circuits, seed_list=[0], label="transpile",
+                         out_path=out_file, wraparound=False, devices=devs)
+        elif args.seed is not None:
+            # Step 1a: one SABRE seed (called per-seed by run_parallel.sh)
+            configs[:] = [("SABRE", dict(mode="lightsabre", aggression=0))]
+            run_circuits(transpile_circuits, seed_list=[args.seed], label="transpile",
+                         out_path=f"Results/transpile_{tag}_s{args.seed}.csv",
+                         wraparound=False, devices=devs)
+        else:
+            # Direct (non-parallel) run: SABRE all seeds then FINESSE_AUTO
+            configs[:] = [("SABRE", dict(mode="lightsabre", aggression=0))]
+            print(f"=== TRANSPILE SABRE ({len(transpile_circuits)} circuits, {n_sabre} seeds, tag={tag}) ===")
+            run_circuits(transpile_circuits, seed_list=list(range(n_sabre)), label="transpile",
+                         out_path=out_file, wraparound=False, devices=devs)
+            configs[:] = [("FINESSE_AUTO", dict())]
+            print(f"=== TRANSPILE FINESSE_AUTO ({len(transpile_circuits)} circuits, 21 trials, tag={tag}) ===")
+            run_circuits(transpile_circuits, seed_list=[0], label="transpile",
+                         out_path=out_file, wraparound=False, devices=devs)
 
         import sys; sys.exit(0)
 
