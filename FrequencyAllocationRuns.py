@@ -559,13 +559,13 @@ if __name__ == "__main__":
                          out_path=out_file, wraparound=False, devices=devs)
         elif args.seed is not None:
             # Step 1a: one SABRE seed (called per-seed by run_parallel.sh)
-            configs[:] = [("SABRE", dict(mode="lightsabre", aggression=0))]
+            configs[:] = [("SABRE", dict(mode="lightsabre", aggression=0, bidir_passes=1))]
             run_circuits(transpile_circuits, seed_list=[args.seed], label="transpile",
                          out_path=f"Results/transpile_{tag}_s{args.seed}.csv",
                          wraparound=False, devices=devs)
         else:
             # Direct (non-parallel) run: SABRE all seeds then FINESSE_AUTO
-            configs[:] = [("SABRE", dict(mode="lightsabre", aggression=0))]
+            configs[:] = [("SABRE", dict(mode="lightsabre", aggression=0, bidir_passes=1))]
             print(f"=== TRANSPILE SABRE ({len(transpile_circuits)} circuits, {n_sabre} seeds, tag={tag}) ===")
             run_circuits(transpile_circuits, seed_list=list(range(n_sabre)), label="transpile",
                          out_path=out_file, wraparound=False, devices=devs)

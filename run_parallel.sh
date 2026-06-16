@@ -28,6 +28,10 @@ fi
 
 mkdir -p Results logs
 
+# Clear per-seed files before launching so append-mode writes don't accumulate across runs
+TAG_EARLY=$([ -n "$IBM_FLAG" ] && echo "ibm" || echo "snail")
+rm -f Results/${MODE}_${TAG_EARLY}_s*.csv
+
 echo "=== $MODE: seeds 0-$((SEEDS-1)), $NJOBS parallel slots, $(nproc) cores available ==="
 
 pids=()

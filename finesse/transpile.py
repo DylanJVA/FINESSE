@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import copy
 import math
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
@@ -57,7 +58,7 @@ def finesse_transpile(
         basis_gate:     Native 2Q gate ('sqrt_iswap', 'cx', 'ecr').
         betas:          β values to search. Defaults to _DEFAULT_BETAS.
                         β=inf (pure fidelity) is always appended.
-        seed:           RNG seed for the initial random layout.
+        seed:           RNG seed for the bidir warmup layout.
 
     Returns:
         (circuit, best_beta): best routed QuantumCircuit and the β that achieved
@@ -82,20 +83,31 @@ def finesse_transpile(
         betas = _DEFAULT_BETAS
     grid = list(betas) + [float('inf')]
 
-    best_dag, best_cost, best_beta = None, float('inf'), 0.0
-    for beta in grid:
+    # ── Parallel β grid ──────────────────────────────────────────────────────
+    # All 21 trials are independent (flat grid, no gradient descent), so run
+    # them in parallel. LightSABRE is Rust-based and releases the GIL, so
+    # ThreadPoolExecutor gives real multi-core parallelism without pickling.
+    def _trial(beta: float):
         alpha_r = 0.0 if math.isinf(beta) else 1.0
         beta_r  = 1.0 if math.isinf(beta) else beta
+        F = fidelity_matrix.copy()  # own copy per thread; numpy C internals aren't GIL-safe for concurrent reads
         routed, _, _ = route(
             copy.deepcopy(dag_phys), coupling_map,
             seed=warmup_seed, initial_cur=list(initial_cur),
             mode='lightsabre', aggression=2,
-            fidelity_matrix=fidelity_matrix,
+            fidelity_matrix=F,
             fidelity_mirror=True,
             basis_gate=basis_gate,
             alpha=alpha_r, beta=beta_r,
         )
-        cost = circuit_lf_cost(routed, fidelity_matrix, basis_gate=basis_gate)
+        cost = circuit_lf_cost(routed, F, basis_gate=basis_gate)
+        return routed, cost, beta
+
+    with ThreadPoolExecutor(max_workers=len(grid)) as pool:
+        results = list(pool.map(_trial, grid))
+
+    best_dag, best_cost, best_beta = None, float('inf'), 0.0
+    for routed, cost, beta in results:
         if cost < best_cost:
             best_dag, best_cost, best_beta = routed, cost, beta
 
