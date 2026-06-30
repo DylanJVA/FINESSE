@@ -35,7 +35,9 @@ def finesse_transpile(
     basis_gate: str = 'sqrt_iswap',
     betas: list[float] | None = None,
     n_seeds: int = 3,
+    n_traversals: int = 2,
     seed: int = 0,
+    parallel: bool = True,
 ) -> tuple[QuantumCircuit, float]:
     """
     Transpile a circuit with FINESSE.
@@ -51,7 +53,11 @@ def finesse_transpile(
         fidelity_matrix: F[i,j] = 2Q gate fidelity on link (i,j).
         basis_gate:     Native 2Q gate ('sqrt_iswap', 'cx', 'ecr').
         betas:          β values to search. β=inf (pure fidelity) always appended.
-        n_seeds:        Number of distinct bidir-warmed layouts to try.
+        n_seeds:        Number of distinct warmed layouts to try.
+        n_traversals:   Number of SABRE layout warmup passes per seed, alternating
+                        forward/backward (0 = no warmup, route from random layout;
+                        2 = forward-backward; 3 = forward-backward-forward). The
+                        final β routing pass is separate and always runs.
         seed:           Master RNG seed.
 
     Returns:
@@ -66,15 +72,16 @@ def finesse_transpile(
         betas = _DEFAULT_BETAS
     grid_betas = list(betas) + [float('inf')]
 
-    # ── Generate n_seeds bidir-warmed layouts ─────────────────────────────────
+    # ── Generate n_seeds warmed layouts ───────────────────────────────────────
+    # Each seed: n_traversals layout passes, alternating forward/backward
+    # (t=0 forward, t=1 backward, t=2 forward, ...). emit_ops=False, free.
     layouts = []
     for _ in range(n_seeds):
         warmup_seed = int(rng.integers(2**31))
         initial = list(rng.permutation(n_phys)[:n_virtual])
-        initial = _layout_pass(dag_phys, coupling_map, initial,
-                               reverse=False, seed=warmup_seed)
-        initial = _layout_pass(dag_phys, coupling_map, initial,
-                               reverse=True,  seed=warmup_seed)
+        for t in range(n_traversals):
+            initial = _layout_pass(dag_phys, coupling_map, initial,
+                                   reverse=bool(t % 2), seed=warmup_seed)
         layouts.append((warmup_seed, initial))
 
     # ── (layout, β) grid — all independent, run in parallel ──────────────────
@@ -97,8 +104,13 @@ def finesse_transpile(
         cost = circuit_lf_cost(routed, F, basis_gate=basis_gate)
         return routed, cost, beta
 
-    with ThreadPoolExecutor(max_workers=len(trials)) as pool:
-        results = list(pool.map(_trial, trials))
+    # parallel=False: run trials serially (use when an outer process pool already
+    # saturates the cores, to avoid thread oversubscription).
+    if parallel:
+        with ThreadPoolExecutor(max_workers=len(trials)) as pool:
+            results = list(pool.map(_trial, trials))
+    else:
+        results = [_trial(t) for t in trials]
 
     best_dag, best_cost, best_beta = None, float('inf'), 0.0
     for routed, cost, beta in results:
