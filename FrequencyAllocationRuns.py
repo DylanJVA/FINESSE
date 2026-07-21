@@ -10,9 +10,11 @@ from qiskit.circuit.random import random_circuit
 from qiskit.converters import circuit_to_dag
 from qiskit.transpiler import CouplingMap
 
+from qiskit.transpiler import PassManager
 from finesse import (
     apply_trivial_layout, fetch_qasm, fetch_qasmbench,
     circuit_lf_cost, swap_count, finesse_transpile,
+    make_unroll_consolidate,
 )
 from finesse.routing import route
 
@@ -241,6 +243,9 @@ def run_circuits(circuit_list, seed_list, label, out_path=None, wraparound=False
                 if qc.num_qubits > n_phys:
                     print(f"  skip {circ_name} ({qc.num_qubits}q > {n_phys}q)")
                     continue
+                # Consolidate to 2Q unitary blocks so every config routes the same
+                # gate set and lf_cost is comparable across configs.
+                qc = PassManager(make_unroll_consolidate()).run(qc)
                 dag_phys = apply_trivial_layout(qc, cm)
 
             for cfg_name, kwargs in configs:
@@ -257,6 +262,7 @@ def run_circuits(circuit_list, seed_list, label, out_path=None, wraparound=False
                                 basis_gate=basis_gate,
                                 betas=kwargs.get("betas", None),
                                 seed=seed,
+                                consolidate=False,  # qc already consolidated above
                             )
                             routed = circuit_to_dag(qc_out)
                         else:

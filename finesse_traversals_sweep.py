@@ -53,19 +53,20 @@ def _init(tag):
 
 
 def _work(item):
-    """Run one (device, circuit, n_traversals) work item."""
-    dev_idx, circ_name, nt = item
+    """Run one work item: (device idx, circuit, n_traversals, use_vf2, router)."""
+    dev_idx, circ_name, nt, use_vf2, router = item
     dev_name, cm, F, basis_gate = _DEVS[dev_idx]
     qc = _CIRCS[circ_name]
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         qc_out, beta = finesse_transpile(
             qc, cm, F, basis_gate=basis_gate,
-            n_seeds=N_SEEDS, n_traversals=nt, seed=SEED, parallel=False,
+            n_seeds=N_SEEDS, n_traversals=nt, seed=SEED,
+            parallel=False, use_vf2=use_vf2,
         )
     dag = circuit_to_dag(qc_out)
     lf  = circuit_lf_cost(dag, F, basis_gate=basis_gate)
-    return dict(device=dev_name, circuit=circ_name, router=f"FINESSE_t{nt}",
+    return dict(device=dev_name, circuit=circ_name, router=router,
                 beta=beta, seed=SEED,
                 swaps=swap_count(dag), depth=dag.depth(), lf_cost=lf)
 
@@ -84,7 +85,7 @@ def main():
         warnings.simplefilter("ignore")
         circuits = build_paper_circuits()
 
-    # Build the work list (device idx, circuit name, n_traversals)
+    # Build the work list. Traversal study (VF2 off) + one VF2-on variant (t=2).
     items = []
     for di, (dev_name, cm, F, basis_gate) in enumerate(devs):
         n_phys = cm.size()
@@ -92,7 +93,8 @@ def main():
             if qc.num_qubits > n_phys or qc.num_qubits > args.max_qubits:
                 continue
             for nt in N_TRAVERSALS:
-                items.append((di, name, nt))
+                items.append((di, name, nt, False, f"FINESSE_t{nt}"))
+                items.append((di, name, nt, True,  f"FINESSE_t{nt}_vf2"))
     print(f"{len(items)} work items, {args.jobs} jobs, tag={tag}")
 
     os.makedirs("Results", exist_ok=True)
