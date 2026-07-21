@@ -27,10 +27,11 @@ from .routing import route, _layout_pass
 
 # ── Deployed budget levers ────────────────────────────────────────────────────
 # Trial budget ≈ n_seeds × (n_traversals + len(betas)+1) passes; SABRE ≈ 60.
-# Current split (8 seeds, 4 finite β + ∞): 8 × (2 + 5) = 56 passes.
-# Tune these two to trade layout diversity against β resolution.
-DEFAULT_N_SEEDS = 8
-_DEFAULT_BETAS  = [0, 10, 100, 1000]   # β=∞ appended in finesse_transpile → 5-pt grid
+# Split (12 seeds, 2 finite β + ∞): 12 × (2 + 3) = 60 passes.
+# Layout matters more than β, so the budget leans on seeds: an 8×5 split lost to
+# the 20-seed MIRAGE on layout-sensitive circuits; 12×3 wins at equal budget.
+DEFAULT_N_SEEDS = 12
+_DEFAULT_BETAS  = [0, 100]              # β=∞ appended in finesse_transpile → 3-pt grid
 # (the dense β grid for the sensitivity figure is passed explicitly by
 #  finesse_beta_sweep.py; it does not use this default.)
 
