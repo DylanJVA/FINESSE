@@ -35,11 +35,14 @@ from FrequencyAllocationRuns import (
 )
 from finesse import finesse_transpile
 from finesse.benchmarks import swap_count
-from finesse.mirror import circuit_lf_cost
+from finesse.mirror import circuit_lf_cost, circuit_2q_gate_count
+from finesse.transpile import DEFAULT_N_SEEDS, _DEFAULT_BETAS
 
 # FASST/FINESSE spend the budget on layouts + β (8 seeds × (2+5) = 56 passes).
 # MIRAGE has no β, so like SABRE it is a pure layout search: 20 seeds ×
 # (2 warmup + 1 route) = 60 passes, matching Qiskit SABRE's 20 trials × FBF.
+# Post-selection is NOT done here: every trial is written to the CSV and the
+# choice of metric (lf, depth, swaps, gates) is made downstream in the notebook.
 CONFIGS = {
     'FASST':   dict(aggression=0, use_fidelity=True),
     'MIRAGE':  dict(aggression=2, use_fidelity=False, n_seeds=20),
@@ -66,17 +69,21 @@ def _work(item):
     qc = _CIRCS[circ_name]
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        qc_out, beta = finesse_transpile(
+        _, _, recs = finesse_transpile(
             qc, cm, F, basis_gate=basis_gate,
-            seed=SEED, parallel=False, **CONFIGS[cfg_name],
+            seed=SEED, parallel=False, return_all=True, **CONFIGS[cfg_name],
         )
-    dag = circuit_to_dag(qc_out)
-    return dict(
-        device=dev_name, circuit=circ_name, router=cfg_name,
-        beta=(np.nan if beta is None else ('inf' if math.isinf(beta) else beta)),
-        seed=SEED, swaps=swap_count(dag), depth=dag.depth(),
-        lf_cost=circuit_lf_cost(dag, F, basis_gate=basis_gate),
-    )
+    # one row per trial; post-selection happens downstream
+    rows = []
+    for r in recs:
+        b = r['beta']
+        rows.append(dict(
+            device=dev_name, circuit=circ_name, router=cfg_name,
+            beta=(np.nan if b is None else ('inf' if math.isinf(b) else b)),
+            seed=r['seed'], swaps=r['swaps'], depth=r['depth'],
+            gates=r['gates'], lf_cost=r['lf_cost'],
+        ))
+    return rows
 
 
 def main():
@@ -99,19 +106,29 @@ def main():
     print(f"{len(items)} work items, {args.jobs} jobs, tag={tag}")
 
     os.makedirs("Results", exist_ok=True)
-    out_path = f"Results/ablation_{tag}.csv"
-    fields = ["device", "circuit", "router", "beta", "seed", "swaps", "depth", "lf_cost"]
+    # Self-documenting filename: split = FASST/FINESSE seeds × β-grid size
+    # (e.g. '12x3'). MIRAGE always runs at 20 seeds. Derived from the deployed
+    # levers so the name always matches the data it contains.
+    split = f"{DEFAULT_N_SEEDS}x{len(_DEFAULT_BETAS) + 1}"
+    out_path = f"Results/ablation_{tag}_{split}.csv"
+    print(f"split={split}  ->  {out_path}")
+    fields = ["device", "circuit", "router", "beta", "seed", "swaps", "depth", "gates", "lf_cost"]
     with open(out_path, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader()
+        n_rows = 0
         with ProcessPoolExecutor(max_workers=args.jobs,
                                  initializer=_init, initargs=(tag,)) as pool:
-            for row in pool.map(_work, items):
-                w.writerow(row)
+            for rows in pool.map(_work, items):
+                for row in rows:
+                    w.writerow(row)
+                n_rows += len(rows)
                 f.flush()
-                print(f"  {row['device']:18s} {row['circuit']:18s} "
-                      f"{row['router']:8s} beta={row['beta']!s:>5} lf={row['lf_cost']:.3f}")
-    print(f"\nWrote {out_path}")
+                r0 = rows[0]
+                best = min(r['lf_cost'] for r in rows)
+                print(f"  {r0['device']:18s} {r0['circuit']:18s} "
+                      f"{r0['router']:8s} {len(rows):3d} trials  best lf={best:.3f}")
+    print(f"\nWrote {out_path}  ({n_rows} rows)")
 
 
 if __name__ == "__main__":

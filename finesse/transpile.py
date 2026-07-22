@@ -21,8 +21,8 @@ from qiskit.transpiler.passes import VF2Layout
 
 from qiskit.transpiler import PassManager as _PassManager
 
-from .benchmarks import apply_trivial_layout, make_unroll_consolidate
-from .mirror import circuit_lf_cost
+from .benchmarks import apply_trivial_layout, make_unroll_consolidate, swap_count
+from .mirror import circuit_lf_cost, circuit_2q_gate_count
 from .routing import route, _layout_pass
 
 # ── Deployed budget levers ────────────────────────────────────────────────────
@@ -83,8 +83,10 @@ def finesse_transpile(
     use_vf2: bool = True,
     consolidate: bool = True,
     return_curve: bool = False,
+    return_all: bool = False,
     aggression: int = 2,
     use_fidelity: bool = True,
+    post_select: str = 'lf',
 ):
     """
     Transpile a circuit with FINESSE.
@@ -155,13 +157,17 @@ def finesse_transpile(
             layouts.append((int(rng.integers(2**31)), vf2_cur))
 
     # ── (layout, β) grid — all independent, run in parallel ──────────────────
-    trials = [(ws, cur, beta) for ws, cur in layouts for beta in grid_betas]
+    # seed index labels which warmed layout each trial came from.
+    trials = [(i, ws, cur, beta)
+              for i, (ws, cur) in enumerate(layouts) for beta in grid_betas]
 
     mirror_on = aggression > 0
-    F_score = fidelity_matrix  # always score the result by log-infidelity
+    F_score = fidelity_matrix  # lf is always scored against the fidelity matrix
+    # which recorded metric the post-selection minimizes
+    _pskey = {'depth': 'depth', 'swaps': 'swaps', 'gates': 'gates'}.get(post_select, 'lf_cost')
 
     def _trial(args):
-        warmup_seed, initial_cur, beta = args
+        seed_idx, warmup_seed, initial_cur, beta = args
         if beta is None:
             # MIRAGE = FINESSE minus fidelity: hop-count routing with the same
             # routing-aware mirror (accept when it doesn't worsen hop-count),
@@ -188,8 +194,14 @@ def finesse_transpile(
                 basis_gate=basis_gate,
                 alpha=alpha_r, beta=beta_r,
             )
-        cost = circuit_lf_cost(routed, F_score, basis_gate=basis_gate)
-        return routed, cost, beta
+        # record every metric so post-selection is a downstream choice
+        rec = {
+            'seed': seed_idx, 'beta': beta,
+            'swaps': swap_count(routed), 'depth': int(routed.depth()),
+            'gates': circuit_2q_gate_count(routed, basis_gate=basis_gate),
+            'lf_cost': circuit_lf_cost(routed, F_score, basis_gate=basis_gate),
+        }
+        return routed, float(rec[_pskey]), beta, rec
 
     # parallel=False: run trials serially (use when an outer process pool already
     # saturates the cores, to avoid thread oversubscription).
@@ -201,10 +213,16 @@ def finesse_transpile(
 
     best_dag, best_cost, best_beta = None, float('inf'), 0.0
     per_beta: dict[float, list[float]] = {}   # β → list of lf, one per layout
-    for routed, cost, beta in results:
+    all_recs = []
+    for routed, cost, beta, rec in results:
         if cost < best_cost:
             best_dag, best_cost, best_beta = routed, cost, beta
-        per_beta.setdefault(beta, []).append(cost)
+        per_beta.setdefault(beta, []).append(rec['lf_cost'])
+        all_recs.append(rec)
+
+    if return_all:
+        # every trial's metrics; post-selection is done downstream (notebook)
+        return dag_to_circuit(best_dag), best_beta, all_recs
 
     if return_curve:
         # (β, [lf per layout]) sorted by β, with β=inf (pure fidelity) last.
