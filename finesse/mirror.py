@@ -110,6 +110,23 @@ def circuit_lf_cost(routed_dag, F: np.ndarray,
     return total
 
 
+def circuit_2q_gate_count(routed_dag, basis_gate: str = 'sqrt_iswap') -> float:
+    """
+    Total native two-qubit gate count of a routed DAG: sum of decomp_cost(U)
+    over all 2Q gates (the unweighted counterpart of circuit_lf_cost). Each
+    SWAP costs decomp_cost(SWAP); each block costs its KAK decomposition length.
+    """
+    total = 0.0
+    for node in routed_dag.topological_op_nodes():
+        if len(node.qargs) != 2:
+            continue
+        try:
+            total += float(decomp_cost(Operator(node.op).data, basis_gate))
+        except Exception:
+            total += 1.0
+    return total
+
+
 def accept_mirror(cost_baseline: float, cost_m: float, aggression: int) -> bool:
     """
     Decide whether to accept the mirror form U' = SWAP·U at gate execution time.

@@ -17,7 +17,7 @@ from .benchmarks import make_unroll_consolidate, apply_trivial_layout
 
 # ── Fidelity ──────────────────────────────────────────────────────────────────
 from .fidelity import fidelity_matrix_from_backend, build_target_from_fidelities
-from .mirror import circuit_lf_cost
+from .mirror import circuit_lf_cost, circuit_2q_gate_count
 
 # ── Benchmark utilities ───────────────────────────────────────────────────────
 from .benchmarks import (
@@ -43,6 +43,7 @@ __all__ = [
     "fidelity_matrix_from_backend",
     "build_target_from_fidelities",
     "circuit_lf_cost",
+    "circuit_2q_gate_count",
     "make_tokyo",
     "fetch_qasm",
     "fetch_qasmbench",
