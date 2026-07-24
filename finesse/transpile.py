@@ -17,7 +17,9 @@ import numpy as np
 from qiskit import QuantumCircuit
 from qiskit.converters import dag_to_circuit
 from qiskit.transpiler import CouplingMap, PassManager
-from qiskit.transpiler.passes import VF2Layout
+from qiskit.transpiler.passes import VF2Layout, DenseLayout
+from qiskit.transpiler.basepasses import AnalysisPass
+from qiskit.transpiler.passes.layout.vf2_utils import ErrorMap
 
 from qiskit.transpiler import PassManager as _PassManager
 
@@ -47,16 +49,43 @@ _DEFAULT_BETAS      = [0, 100]         # β=∞ appended in finesse_transpile �
 #  finesse_beta_sweep.py; it does not use this default.)
 
 
-def _vf2_initial_cur(qc, coupling_map, n_phys, seed):
+class _SetVF2ErrorMap(AnalysisPass):
+    """Inject a fidelity-derived error map into the property set so VF2Layout
+    scores candidate embeddings by link fidelity (it minimizes summed edge
+    error), picking the highest-fidelity perfect embedding rather than any."""
+    def __init__(self, error_map):
+        super().__init__()
+        self._error_map = error_map
+
+    def run(self, dag):
+        self.property_set['vf2_avg_error_map'] = self._error_map
+
+
+def _vf2_initial_cur(qc, coupling_map, n_phys, seed, fidelity_matrix=None):
     """Try Qiskit VF2Layout for a perfect embedding of qc into the device.
 
     Returns an initial_cur (cur[orig] = physical qubit of logical qubit orig,
     length n_phys, ancillas filling leftover physicals), or None if VF2 finds
-    no perfect subgraph isomorphism (routing-heavy circuits).
+    no perfect subgraph isomorphism (routing-heavy circuits). When a fidelity
+    matrix is given, VF2 is made fidelity-aware so the embedding it returns is
+    the highest-fidelity one, not merely a connectivity-valid one.
     """
     try:
-        pm = PassManager([VF2Layout(coupling_map, seed=seed,
-                                    call_limit=10**6, max_trials=100)])
+        # call_limit=10**6 silently gives up on hard-but-solvable embeddings
+        # (e.g. a long path threading a mesh: ising_n26 has a valid 0-swap
+        # embedding VF2 finds only above ~10**7 calls). Raise it and cap the
+        # search by wall-clock instead so routing-heavy circuits still fail fast.
+        passes = []
+        if fidelity_matrix is not None:
+            # error = 1 - F on each edge (1q diagonal = 0); VF2 minimizes summed
+            # edge error, so this picks the highest-fidelity perfect embedding.
+            emap = {(i, i): 0.0 for i in range(n_phys)}
+            for i, j in coupling_map.get_edges():
+                emap[(i, j)] = float(1.0 - fidelity_matrix[i, j])
+            passes.append(_SetVF2ErrorMap(ErrorMap.from_dict(emap)))
+        passes.append(VF2Layout(coupling_map, seed=seed, call_limit=10**8,
+                                time_limit=10.0, max_trials=100))
+        pm = PassManager(passes)
         pm.run(qc)
         layout = pm.property_set.get('layout')
     except Exception:
@@ -88,6 +117,43 @@ def _vf2_initial_cur(qc, coupling_map, n_phys, seed):
 # fills it (SNAIL), a connected neighbourhood with fidelity slack when it does
 # not (IBM).
 REGION_FACTOR = 3
+
+
+def _layout_to_cur(layout, qc, n_phys):
+    """Convert a Qiskit Layout to a cur[orig]=physical list, ancillas filling the rest."""
+    vb = layout.get_virtual_bits()
+    cur = [-1] * n_phys
+    used = set()
+    for q, phys in vb.items():
+        i = qc.find_bit(q).index
+        if i < qc.num_qubits:
+            cur[i] = phys
+            used.add(phys)
+    leftover = [p for p in range(n_phys) if p not in used]
+    j = 0
+    for i in range(n_phys):
+        if cur[i] == -1:
+            cur[i] = leftover[j]
+            j += 1
+    return cur
+
+
+def _heuristic_curs(qc, coupling_map, n_phys):
+    """SABRE's fixed starting layouts: identity, reversed, and dense. These are
+    circuit-structure-agnostic but reliably good on some circuits (e.g. dense
+    lands a 0-swap embedding for ring/path circuits like ising that random seeds
+    miss). Returned as starting curs, to be warmed like any seed; post-selection
+    keeps them only when they win, so they can only help."""
+    curs = [list(range(n_phys)), list(range(n_phys))[::-1]]   # identity, reversed
+    try:
+        pm = PassManager([DenseLayout(coupling_map)])
+        pm.run(qc)
+        lay = pm.property_set.get('layout')
+        if lay is not None:
+            curs.append(_layout_to_cur(lay, qc, n_phys))
+    except Exception:
+        pass
+    return curs
 
 
 def _compact_initial_cur(coupling_map, n_phys, n_active, rng):
@@ -138,6 +204,7 @@ def finesse_transpile(
     seed: int = 0,
     parallel: bool = True,
     use_vf2: bool = True,
+    use_heuristics: bool = True,
     consolidate: bool = True,
     return_curve: bool = False,
     return_all: bool = False,
@@ -214,9 +281,21 @@ def finesse_transpile(
                                    reverse=bool(t % 2), seed=warmup_seed)
         layouts.append((warmup_seed, initial))
 
+    # ── SABRE heuristic layouts (identity, reversed, dense), warmed like seeds ──
+    # These occupy layout slots the way SABRE's do; post-selection keeps them
+    # only when they beat the random seeds (e.g. dense wins ising's 0-swap).
+    if use_heuristics:
+        for base in _heuristic_curs(qc, coupling_map, n_phys):
+            warmup_seed = int(rng.integers(2**31))
+            initial = list(base)
+            for t in range(n_traversals):
+                initial = _layout_pass(dag_phys, coupling_map, initial,
+                                       reverse=bool(t % 2), seed=warmup_seed)
+            layouts.append((warmup_seed, initial))
+
     # ── VF2 perfect-embedding layout (extra candidate; None on routing-heavy) ──
     if use_vf2:
-        vf2_cur = _vf2_initial_cur(qc, coupling_map, n_phys, seed)
+        vf2_cur = _vf2_initial_cur(qc, coupling_map, n_phys, seed, fidelity_matrix)
         if vf2_cur is not None:
             layouts.append((int(rng.integers(2**31)), vf2_cur))
 

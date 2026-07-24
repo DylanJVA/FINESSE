@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """
 Split sweep: compare candidate (seeds x beta x swap_trials) budget splits at a
-matched ~520-pass budget, to pick the deployed default. Warmup fixed at 2
-(n_traversals=2). Grid vs staged structures both included.
+budget matched to Qiskit SABRE (~600 passes: 24 layout trials x (6 warmup + 20
+swap)), to pick the deployed default. Warmup fixed at 6 (n_traversals=6, i.e.
+SABRE's 2*max_iterations=6); routing-dominated circuits (e.g. bv_n19) need the
+deeper warmup to reach a good layout, and the earlier warmup=2 study omitted
+them. Grid vs staged structures both included.
 
-Budget accounting (warmup=2, n_beta = len(betas)+1 because inf is appended):
-    grid   : n_seeds * (2 + n_beta * swap_trials)
-    staged : n_seeds * (2 + n_beta + swap_trials - 1)
+Budget accounting (warmup=6; total_layouts = n_seeds random + 3 heuristic
+[dense/identity/reversed, like SABRE]; n_beta = len(betas)+1 as inf is appended):
+    grid   : total_layouts * (6 + n_beta * swap_trials)
+    staged : total_layouts * (6 + n_beta + swap_trials - 1)
 
 SABRE baseline (opt-3 default, 20/20) is run separately by qiskit_sabre_baseline.py
 and joined downstream. This script writes EVERY trial (one row per (layout, beta)
@@ -29,27 +33,35 @@ from FrequencyAllocationRuns import (
 )
 from finesse import finesse_transpile
 
-WARMUP = 2   # n_traversals; locked by the warmup study (flat after one forward-back)
+WARMUP = 6      # n_traversals = 2*max_iterations, matching SABRE; deeper warmup
+                # fixes routing-dominated circuits (bv_n19: warmup 2->6 turns a
+                # +16% loss into a -13% win) that the warmup=2 study missed.
+N_HEURISTIC = 3 # dense/identity/reversed layouts always added (like SABRE's), so
+                # a config's total warmed layouts = n_seeds (random) + N_HEURISTIC.
 
-# betas are the FINITE points; finesse_transpile appends inf, so n_beta = len+1.
+# n_seeds is the RANDOM-seed count; 3 heuristic layouts are added on top, so total
+# layouts = n_seeds + 3 and budget uses that total. betas are FINITE points
+# (finesse_transpile appends inf, so n_beta = len+1). Tuned to ~600 (SABRE's real
+# budget: 598 SNAIL / 624 IBM).
 CANDIDATES = {
-    #  id       staged  seeds  betas (finite; +inf)                    swap
-    'G1':  dict(staged=False, n_seeds=30, betas=[0,1,10,100],                 swap_trials=3),
-    'G2':  dict(staged=False, n_seeds=20, betas=[0,10,100],                   swap_trials=6),
-    'S1':  dict(staged=True,  n_seeds=30, betas=[0,0.5,2,10,40,150,500],      swap_trials=8),
-    'S2':  dict(staged=True,  n_seeds=26, betas=[0,0.3,1,3,10,30,100,300,1000], swap_trials=9),
-    'S3':  dict(staged=True,  n_seeds=40, betas=[0,1,10,50,200],              swap_trials=6),
-    'S4':  dict(staged=True,  n_seeds=50, betas=[0,1,10,100],                 swap_trials=4),  # push seeds harder
-    'NOB': dict(staged=False, n_seeds=20, betas=[],                           swap_trials=24),  # n_beta=1 (inf only)
+    #  id       staged  random  betas (finite; +inf)                    swap    total  budget
+    'G1':  dict(staged=False, n_seeds=27, betas=[0,10,100],                   swap_trials=3),  # 30  540
+    'G2':  dict(staged=False, n_seeds=17, betas=[0,10,100],                   swap_trials=6),  # 20  600
+    'S1':  dict(staged=True,  n_seeds=27, betas=[0,1,10,50,200],              swap_trials=6),  # 30  510
+    'S2':  dict(staged=True,  n_seeds=23, betas=[0,0.3,1,3,10,30,100,300,1000], swap_trials=9),# 26  624
+    'S3':  dict(staged=True,  n_seeds=37, betas=[0,1,10,50,200],              swap_trials=4),  # 40  600
+    'S4':  dict(staged=True,  n_seeds=47, betas=[0,1,10,100],                 swap_trials=2),  # 50  600
+    'NOB': dict(staged=False, n_seeds=17, betas=[],                           swap_trials=24), # 20  600
 }
 SEED = 0
 
 
 def budget(cfg):
     n_beta = len(cfg['betas']) + 1
+    total = cfg['n_seeds'] + N_HEURISTIC          # random seeds + heuristic layouts
     if cfg['staged']:
-        return cfg['n_seeds'] * (WARMUP + n_beta + cfg['swap_trials'] - 1)
-    return cfg['n_seeds'] * (WARMUP + n_beta * cfg['swap_trials'])
+        return total * (WARMUP + n_beta + cfg['swap_trials'] - 1)
+    return total * (WARMUP + n_beta * cfg['swap_trials'])
 
 
 _DEVS = None
@@ -89,7 +101,7 @@ def _work(item):
     common = dict(
         device=dev_name, circuit=circ_name, config=cfg_name, budget=budget(cfg),
         structure=('staged' if cfg['staged'] else 'grid'),
-        n_seeds=cfg['n_seeds'], n_beta=len(cfg['betas']) + 1,
+        n_seeds=cfg['n_seeds'], n_heuristic=N_HEURISTIC, n_beta=len(cfg['betas']) + 1,
         swap_trials=cfg['swap_trials'], warmup=WARMUP,
     )
     return [dict(
@@ -128,7 +140,7 @@ def main():
     os.makedirs("Results", exist_ok=True)
     out_path = args.out or f"Results/split_sweep_{tag}.csv"
     fields = ["device", "circuit", "config", "budget",
-              "structure", "n_seeds", "n_beta", "swap_trials", "warmup",
+              "structure", "n_seeds", "n_heuristic", "n_beta", "swap_trials", "warmup",
               "seed", "beta", "swaps", "depth", "gates", "lf_cost"]
     with open(out_path, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fields)

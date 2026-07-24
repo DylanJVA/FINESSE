@@ -31,9 +31,9 @@ def _mqt(name, n, level="indep"):
 def build_paper_circuits():
     """18-circuit suite spanning 8–32 qubits (6 small, 7 medium, 5 large).
 
-    The random stress circuit is kept mid-size (random_n16_d40); a 32-qubit dense
-    random was dropped because its routing cost dominated the sweep while adding
-    no discriminating signal.
+    The random stress circuit is kept mid-size (random_n16_d40). A 32-qubit dense
+    random was dropped because, as the largest and densest circuit in the suite,
+    its routing cost dominated the sweep runtime.
     """
     return [
         # 8–14 qubits (6)
