@@ -1,10 +1,10 @@
 # finesse/transpile.py
 #
 # Strategy: run a (seed × β) grid. Each seed gets its own bidir SABRE warmup
-# to find a good initial layout, then is routed with every β value. All trials
-# are independent and run in parallel. Post-select by lf_cost.
-#
-# Default: 3 seeds × 21 β values = 63 trials, all parallelised over available cores.
+# to find a good initial layout, then is routed with every β value. For each
+# (layout, β) the route is replayed swap_trials times with different random
+# tie-breaks, keeping the best (this mirrors Qiskit SabreLayout's swap_trials).
+# All trials are independent and run in parallel. Post-select by lf_cost.
 
 from __future__ import annotations
 
@@ -26,12 +26,23 @@ from .mirror import circuit_lf_cost, circuit_2q_gate_count
 from .routing import route, _layout_pass
 
 # ── Deployed budget levers ────────────────────────────────────────────────────
-# Trial budget ≈ n_seeds × (n_traversals + len(betas)+1) passes; SABRE ≈ 60.
-# Split (12 seeds, 2 finite β + ∞): 12 × (2 + 3) = 60 passes.
-# Layout matters more than β, so the budget leans on seeds: an 8×5 split lost to
-# the 20-seed MIRAGE on layout-sensitive circuits; 12×3 wins at equal budget.
-DEFAULT_N_SEEDS = 12
-_DEFAULT_BETAS  = [0, 100]              # β=∞ appended in finesse_transpile → 3-pt grid
+# FINESSE exposes the same three search axes as Qiskit SabreLayout:
+#   n_seeds      ~ layout_trials    distinct warmed initial layouts (keep best)
+#   n_traversals ~ 2*max_iterations forward/backward warmup passes per layout
+#   swap_trials  ~ swap_trials      re-route a fixed layout with random tie-breaks,
+#                                   keep the best (SabreSwap breaks ties randomly)
+# Routing-pass budget ≈ n_seeds × (n_traversals + len(grid_betas) × swap_trials).
+#
+# swap_trials only helps HOP-COUNT routers: integer hop scores tie constantly, so
+# Qiskit routes 20× and keeps the lucky low-swap outcome. FINESSE's fidelity cost
+# is continuous (a near-total order; ties < SCORE_EPSILON essentially never occur),
+# so a single route already lands the best -- swap_trials>1 leaves the fidelity
+# result unchanged (verified). We therefore deploy swap_trials=1 for fidelity
+# routing and give the hop-count baseline (MIRAGE) swap_trials=20 to match SABRE.
+# Deployed FINESSE (12 seeds, 2 warmup, 3-pt β grid, swap_trials=1): 12×(2+3) = 60.
+DEFAULT_N_SEEDS     = 12
+DEFAULT_SWAP_TRIALS = 1
+_DEFAULT_BETAS      = [0, 100]         # β=∞ appended in finesse_transpile → 3-pt grid
 # (the dense β grid for the sensitivity figure is passed explicitly by
 #  finesse_beta_sweep.py; it does not use this default.)
 
@@ -70,6 +81,50 @@ def _vf2_initial_cur(qc, coupling_map, n_phys, seed):
     return cur
 
 
+# Initial-layout region size = REGION_FACTOR × circuit qubits (capped at device).
+# A full permutation scatters a small circuit across a large device (25 qubits
+# over 127), which the warm-up cannot undo; a *tight* region (1×) traps qubits in
+# a low-fidelity corner. ~3× is the compromise: ≈ whole device when the circuit
+# fills it (SNAIL), a connected neighbourhood with fidelity slack when it does
+# not (IBM).
+REGION_FACTOR = 3
+
+
+def _compact_initial_cur(coupling_map, n_phys, n_active, rng):
+    """Random initial layout whose active qubits occupy a connected region.
+
+    Grow a connected BFS region of ~REGION_FACTOR×n_active physical qubits from a
+    random start and place the active logical qubits within it; idle ancillas take
+    whatever is left. The random start keeps layouts diverse across seeds.
+    """
+    region_size = min(n_phys, int(np.ceil(REGION_FACTOR * n_active)))
+    adj = [[] for _ in range(n_phys)]
+    for i, j in coupling_map.get_edges():
+        adj[i].append(j); adj[j].append(i)
+
+    start = int(rng.integers(n_phys))
+    region, seen, frontier = [start], {start}, [start]
+    while len(region) < region_size and frontier:
+        nxt = []
+        for u in frontier:
+            for v in adj[u]:
+                if v not in seen:
+                    seen.add(v); region.append(v); nxt.append(v)
+                    if len(region) >= region_size:
+                        break
+            if len(region) >= region_size:
+                break
+        frontier = nxt
+    region = region[:region_size]
+
+    rest = [p for p in range(n_phys) if p not in set(region)]
+    rest = [int(x) for x in rng.permutation(rest)] if rest else []
+    while len(region) < region_size and rest:       # disconnected map fallback
+        region.append(rest.pop())
+    region = [int(x) for x in rng.permutation(region)]
+    return region + rest
+
+
 def finesse_transpile(
     qc: QuantumCircuit,
     coupling_map: CouplingMap,
@@ -78,6 +133,8 @@ def finesse_transpile(
     betas: list[float] | None = None,
     n_seeds: int = DEFAULT_N_SEEDS,
     n_traversals: int = 2,
+    swap_trials: int = DEFAULT_SWAP_TRIALS,
+    staged: bool = False,
     seed: int = 0,
     parallel: bool = True,
     use_vf2: bool = True,
@@ -106,7 +163,13 @@ def finesse_transpile(
         n_traversals:   Number of SABRE layout warmup passes per seed, alternating
                         forward/backward (0 = no warmup, route from random layout;
                         2 = forward-backward; 3 = forward-backward-forward). The
-                        final β routing pass is separate and always runs.
+                        final β routing pass is separate and always runs. Analog of
+                        Qiskit SabreLayout's 2*max_iterations layout passes.
+        swap_trials:    Re-route each (layout, β) this many times with different
+                        random SabreSwap tie-breaks and keep the best (by the
+                        post_select metric). Analog of Qiskit SabreLayout's
+                        swap_trials. 1 = single route (old behaviour, reproduced
+                        exactly). Multiplies the routing budget by this factor.
         seed:           Master RNG seed.
         parallel:       Run the β grid with threads (False = serial; use under an
                         outer process pool to avoid oversubscription).
@@ -127,6 +190,7 @@ def finesse_transpile(
     dag_phys = apply_trivial_layout(qc, coupling_map)
     n_phys   = coupling_map.size()
     n_virtual = dag_phys.num_qubits()
+    n_active  = min(qc.num_qubits, n_phys)   # real circuit qubits (rest are ancillas)
     rng = np.random.default_rng(seed)
 
     # β grid only when fidelity routing is active (FASST/FINESSE). Without it
@@ -144,7 +208,7 @@ def finesse_transpile(
     layouts = []
     for _ in range(n_seeds):
         warmup_seed = int(rng.integers(2**31))
-        initial = list(rng.permutation(n_phys)[:n_virtual])
+        initial = _compact_initial_cur(coupling_map, n_phys, n_active, rng)
         for t in range(n_traversals):
             initial = _layout_pass(dag_phys, coupling_map, initial,
                                    reverse=bool(t % 2), seed=warmup_seed)
@@ -166,15 +230,14 @@ def finesse_transpile(
     # which recorded metric the post-selection minimizes
     _pskey = {'depth': 'depth', 'swaps': 'swaps', 'gates': 'gates'}.get(post_select, 'lf_cost')
 
-    def _trial(args):
-        seed_idx, warmup_seed, initial_cur, beta = args
+    def _route_once(initial_cur, beta, route_seed):
         if beta is None:
             # MIRAGE = FINESSE minus fidelity: hop-count routing with the same
             # routing-aware mirror (accept when it doesn't worsen hop-count),
             # not MIRAGE's gate-cost-only pure_mirror. aggression gates it.
             routed, _, _ = route(
                 copy.deepcopy(dag_phys), coupling_map,
-                seed=warmup_seed, initial_cur=list(initial_cur),
+                seed=route_seed, initial_cur=list(initial_cur),
                 mode='lightsabre', aggression=aggression,
                 pure_mirror=False,
                 basis_gate=basis_gate,
@@ -187,29 +250,74 @@ def finesse_transpile(
             F = fidelity_matrix.copy()
             routed, _, _ = route(
                 copy.deepcopy(dag_phys), coupling_map,
-                seed=warmup_seed, initial_cur=list(initial_cur),
+                seed=route_seed, initial_cur=list(initial_cur),
                 mode='lightsabre', aggression=aggression,
                 fidelity_matrix=F,
                 fidelity_mirror=mirror_on,
                 basis_gate=basis_gate,
                 alpha=alpha_r, beta=beta_r,
             )
-        # record every metric so post-selection is a downstream choice
-        rec = {
+        return routed
+
+    def _make_rec(routed, seed_idx, beta):
+        return {
             'seed': seed_idx, 'beta': beta,
             'swaps': swap_count(routed), 'depth': int(routed.depth()),
             'gates': circuit_2q_gate_count(routed, basis_gate=basis_gate),
             'lf_cost': circuit_lf_cost(routed, F_score, basis_gate=basis_gate),
         }
-        return routed, float(rec[_pskey]), beta, rec
 
-    # parallel=False: run trials serially (use when an outer process pool already
+    def _trial(args):
+        # GRID: for one (layout, β), replay SabreSwap swap_trials times with
+        # different random tie-breaks and keep the best (by the post-select
+        # metric). Every β pays the full swap search. k=0 reuses warmup_seed so
+        # swap_trials=1 reproduces the old result exactly.
+        seed_idx, warmup_seed, initial_cur, beta = args
+        tie_rng = np.random.default_rng(warmup_seed)
+        best_routed, best_rec = None, None
+        for k in range(max(1, swap_trials)):
+            route_seed = warmup_seed if k == 0 else int(tie_rng.integers(2**31))
+            routed = _route_once(initial_cur, beta, route_seed)
+            rec = _make_rec(routed, seed_idx, beta)
+            if best_rec is None or rec[_pskey] < best_rec[_pskey]:
+                best_routed, best_rec = routed, rec
+        return best_routed, float(best_rec[_pskey]), beta, best_rec
+
+    def _staged_trial(args):
+        # STAGED: for one layout, scan every β once (swap_trials=1) to pick the
+        # winning β, then spend the remaining swap_trials-1 replays only on that
+        # β. Cost per layout = n_β + (swap_trials-1) instead of n_β × swap_trials.
+        seed_idx, warmup_seed, initial_cur = args
+        best_routed, best_rec = None, None
+        for beta in grid_betas:                      # Stage 1: β scan, 1 route each
+            routed = _route_once(initial_cur, beta, warmup_seed)
+            rec = _make_rec(routed, seed_idx, beta)
+            if best_rec is None or rec[_pskey] < best_rec[_pskey]:
+                best_routed, best_rec = routed, rec
+        win_beta = best_rec['beta']                  # Stage 2: refine the winner
+        tie_rng = np.random.default_rng(warmup_seed + 1)
+        for _k in range(max(1, swap_trials) - 1):
+            routed = _route_once(initial_cur, win_beta, int(tie_rng.integers(2**31)))
+            rec = _make_rec(routed, seed_idx, win_beta)
+            if rec[_pskey] < best_rec[_pskey]:
+                best_routed, best_rec = routed, rec
+        return best_routed, float(best_rec[_pskey]), win_beta, best_rec
+
+    # staged operates per-layout (one task each); grid per (layout, β).
+    if staged:
+        tasks = [(i, ws, cur) for i, (ws, cur) in enumerate(layouts)]
+        run = _staged_trial
+    else:
+        tasks = trials
+        run = _trial
+
+    # parallel=False: run tasks serially (use when an outer process pool already
     # saturates the cores, to avoid thread oversubscription).
     if parallel:
-        with ThreadPoolExecutor(max_workers=len(trials)) as pool:
-            results = list(pool.map(_trial, trials))
+        with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
+            results = list(pool.map(run, tasks))
     else:
-        results = [_trial(t) for t in trials]
+        results = [run(t) for t in tasks]
 
     best_dag, best_cost, best_beta = None, float('inf'), 0.0
     per_beta: dict[float, list[float]] = {}   # β → list of lf, one per layout
