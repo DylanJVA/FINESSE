@@ -29,7 +29,12 @@ def _mqt(name, n, level="indep"):
 
 
 def build_paper_circuits():
-    """Balanced 18-circuit suite: 6 per size band (8–14q, 15–21q, 22–32q)."""
+    """18-circuit suite spanning 8–32 qubits (6 small, 7 medium, 5 large).
+
+    The random stress circuit is kept mid-size (random_n16_d40); a 32-qubit dense
+    random was dropped because its routing cost dominated the sweep while adding
+    no discriminating signal.
+    """
     return [
         # 8–14 qubits (6)
         ("qpeexact_n8",       _mqt("qpeexact",      8, "alg")),
@@ -38,20 +43,20 @@ def build_paper_circuits():
         ("ae_n10",            _mqt("ae",            10, "alg")),
         ("ghz_n10",           _mqt("ghz",           10, "alg")),
         ("vqe_two_local_n10", _mqt("vqe_two_local", 10, "alg")),
-        # 15–21 qubits (6)
+        # 15–21 qubits (7)
         ("seca_n11",          fetch_qasmbench("seca_n11",        size="medium")),
         ("multiplier_n15",    fetch_qasmbench("multiplier_n15",  size="medium")),
+        ("random_n16_d40",    random_circuit(16, 40, max_operands=2, seed=42)),
         ("dnn_n16",           fetch_qasmbench("dnn_n16",         size="medium")),
         ("qec9xz_n17",        fetch_qasmbench("qec9xz_n17",      size="medium")),
         ("square_root_n18",   fetch_qasmbench("square_root_n18", size="medium")),
         ("bv_n19",            fetch_qasmbench("bv_n19",          size="medium")),
-        # 22–32 qubits (6)
+        # 22–32 qubits (5)
         ("qft_n24",           _mqt("qft",           24, "indep")),
         ("qaoa_n25_p3",       make_qaoa(25, 3)),
         ("ising_n26",         fetch_qasmbench("ising_n26",       size="medium")),
         ("qft_n32",           _mqt("qft",           32, "indep")),
         ("qaoa_n32_p3",       make_qaoa(32, 3)),
-        ("random_n32_d50",    random_circuit(32, 50, max_operands=2, seed=42)),
     ]
 
 
