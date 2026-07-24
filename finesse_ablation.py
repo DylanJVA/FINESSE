@@ -25,6 +25,7 @@ import csv
 import math
 import os
 import warnings
+import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
@@ -36,17 +37,24 @@ from FrequencyAllocationRuns import (
 from finesse import finesse_transpile
 from finesse.benchmarks import swap_count
 from finesse.mirror import circuit_lf_cost, circuit_2q_gate_count
-from finesse.transpile import DEFAULT_N_SEEDS, _DEFAULT_BETAS
+# Warmup fixed at 6 (2*max_iterations, matching SABRE) for all configs.
+WARMUP = 6
 
-# FASST/FINESSE spend the budget on layouts + β (8 seeds × (2+5) = 56 passes).
-# MIRAGE has no β, so like SABRE it is a pure layout search: 20 seeds ×
-# (2 warmup + 1 route) = 60 passes, matching Qiskit SABRE's 20 trials × FBF.
-# Post-selection is NOT done here: every trial is written to the CSV and the
-# choice of metric (lf, depth, swaps, gates) is made downstream in the notebook.
+# The 4-way ablation at a budget matched to SABRE (~600 passes: 598 SNAIL / 624 IBM):
+#   SABRE   : Qiskit SabreLayout (run separately, qiskit_sabre_baseline.py)
+#   FASST   : deployed FINESSE config, mirror OFF (aggression=0)
+#   MIRAGE  : SABRE's budget + mirror, no fidelity: 20 layouts x (6 warmup + 20 swap)
+#   FINESSE : the deployed config from the split sweep (aggression=2, fidelity on)
+# FASST/FINESSE share the SAME config so the only difference is mirror. Post-selection
+# is NOT done here: every trial is written to the CSV and the metric (lf/depth/swaps/
+# gates) is chosen downstream in the notebook.
+#
+# DEPLOYED is tentatively S4 (the split-sweep favorite); update once the sweep confirms.
+DEPLOYED = dict(n_seeds=47, betas=[0, 1, 10, 100], swap_trials=2, staged=True)  # +3 heuristic = 50 layouts
 CONFIGS = {
-    'FASST':   dict(aggression=0, use_fidelity=True),
-    'MIRAGE':  dict(aggression=2, use_fidelity=False, n_seeds=20),
-    'FINESSE': dict(aggression=2, use_fidelity=True),
+    'FASST':   dict(**DEPLOYED, aggression=0, use_fidelity=True),
+    'MIRAGE':  dict(aggression=2, use_fidelity=False, n_seeds=20, swap_trials=20),
+    'FINESSE': dict(**DEPLOYED, aggression=2, use_fidelity=True),
 }
 SEED = 0
 
@@ -70,7 +78,7 @@ def _work(item):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         _, _, recs = finesse_transpile(
-            qc, cm, F, basis_gate=basis_gate,
+            qc, cm, F, basis_gate=basis_gate, n_traversals=WARMUP,
             seed=SEED, parallel=False, return_all=True, **CONFIGS[cfg_name],
         )
     # one row per trial; post-selection happens downstream
@@ -106,18 +114,17 @@ def main():
     print(f"{len(items)} work items, {args.jobs} jobs, tag={tag}")
 
     os.makedirs("Results", exist_ok=True)
-    # Self-documenting filename: split = FASST/FINESSE seeds × β-grid size
-    # (e.g. '12x3'). MIRAGE always runs at 20 seeds. Derived from the deployed
-    # levers so the name always matches the data it contains.
-    split = f"{DEFAULT_N_SEEDS}x{len(_DEFAULT_BETAS) + 1}"
-    out_path = f"Results/ablation_{tag}_{split}.csv"
-    print(f"split={split}  ->  {out_path}")
+    out_path = f"Results/ablation_{tag}.csv"
+    print(f"-> {out_path}")
     fields = ["device", "circuit", "router", "beta", "seed", "swaps", "depth", "gates", "lf_cost"]
     with open(out_path, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader()
         n_rows = 0
+        # 'spawn' (not fork): finesse_transpile now uses DenseLayout/VF2, whose
+        # rustworkx/rayon thread pool deadlocks in fork()ed workers (see split sweep).
         with ProcessPoolExecutor(max_workers=args.jobs,
+                                 mp_context=mp.get_context("spawn"),
                                  initializer=_init, initargs=(tag,)) as pool:
             for rows in pool.map(_work, items):
                 for row in rows:
