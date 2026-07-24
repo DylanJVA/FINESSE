@@ -9,8 +9,9 @@ Budget accounting (warmup=2, n_beta = len(betas)+1 because inf is appended):
     staged : n_seeds * (2 + n_beta + swap_trials - 1)
 
 SABRE baseline (opt-3 default, 20/20) is run separately by qiskit_sabre_baseline.py
-and joined downstream. This script writes one row per (device, circuit, config)
-with the post-selected (min-lf) result.
+and joined downstream. This script writes EVERY trial (one row per (layout, beta)
+for grid configs, one per layout for staged), each row self-documenting the full
+configuration, so post-selection (lf / depth / swaps) is a downstream choice.
 
 Usage:
     python3 finesse_split_sweep.py --jobs 24          # SNAIL
@@ -68,14 +69,13 @@ def _work(item):
     dev_idx, circ_name, cfg_name = item
     dev_name, cm, F, basis_gate = _DEVS[dev_idx]
     qc = _CIRCS[circ_name]
-    cfg = CANDIDATES[cfg_name]
-    kw = {k: v for k, v in cfg.items()}
+    cfg = CANDIDATES[cfg_name]   # keys: staged, n_seeds, betas, swap_trials
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         _, _, recs = finesse_transpile(
             qc, cm, F, basis_gate=basis_gate, seed=SEED, parallel=False,
             return_all=True, n_traversals=WARMUP, use_vf2=True,
-            use_fidelity=True, aggression=2, **kw,
+            use_fidelity=True, aggression=2, **cfg,
         )
     # Write EVERY trial so post-selection (lf / depth / swaps / gates) is a
     # downstream choice, not baked in here. For grid, one row per (layout, beta);
@@ -83,9 +83,17 @@ def _work(item):
     # already commits to the swap-selection metric (default lf) during its beta
     # scan, so staged rows cannot be faithfully re-post-selected by another
     # metric -- grid preserves that flexibility, staged trades it for budget.
-    b = budget(cfg)
+    # Every row is self-documenting: it carries the full configuration that
+    # produced it, not just the config id, so the CSV stands on its own even if
+    # CANDIDATES later changes.
+    common = dict(
+        device=dev_name, circuit=circ_name, config=cfg_name, budget=budget(cfg),
+        structure=('staged' if cfg['staged'] else 'grid'),
+        n_seeds=cfg['n_seeds'], n_beta=len(cfg['betas']) + 1,
+        swap_trials=cfg['swap_trials'], warmup=WARMUP,
+    )
     return [dict(
-        device=dev_name, circuit=circ_name, config=cfg_name, budget=b,
+        **common,
         seed=r['seed'], beta=('inf' if isinstance(r['beta'], float)
                               and math.isinf(r['beta']) else r['beta']),
         swaps=r['swaps'], depth=r['depth'], gates=r['gates'], lf_cost=r['lf_cost'],
@@ -97,7 +105,7 @@ def main():
     ap.add_argument("--ibm", action="store_true")
     ap.add_argument("--jobs", type=int, default=os.cpu_count())
     ap.add_argument("--circuits", type=str, default=None,
-                    help="comma-separated circuit names to restrict to (small run)")
+                    help="comma-separated circuit names to restrict to (small validation run)")
     ap.add_argument("--out", type=str, default=None, help="override output path")
     args = ap.parse_args()
 
@@ -120,6 +128,7 @@ def main():
     os.makedirs("Results", exist_ok=True)
     out_path = args.out or f"Results/split_sweep_{tag}.csv"
     fields = ["device", "circuit", "config", "budget",
+              "structure", "n_seeds", "n_beta", "swap_trials", "warmup",
               "seed", "beta", "swaps", "depth", "gates", "lf_cost"]
     with open(out_path, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fields)

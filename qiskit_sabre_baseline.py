@@ -29,7 +29,7 @@ from FrequencyAllocationRuns import (
     build_paper_circuits, build_topology, build_ibm_topologies,
 )
 from finesse.benchmarks import make_unroll_consolidate
-from finesse.mirror import circuit_lf_cost
+from finesse.mirror import circuit_lf_cost, circuit_2q_gate_count
 
 # Match LightSABRE's default (LD) config: 20 layout trials, 20 swap trials.
 LAYOUT_TRIALS = 20
@@ -51,6 +51,7 @@ def run_qiskit_sabre(qc_cons, cm, F, basis_gate):
     return dict(
         swaps=swaps,
         depth=dag.depth(),
+        gates=circuit_2q_gate_count(dag, basis_gate=basis_gate),
         lf_cost=circuit_lf_cost(dag, F, basis_gate=basis_gate),
     )
 
@@ -77,7 +78,7 @@ def main():
     os.makedirs("Results", exist_ok=True)
     out_path = f"Results/qiskit_sabre_{tag}.csv"
     fieldnames = ["device", "circuit", "router", "beta", "seed",
-                  "swaps", "depth", "lf_cost"]
+                  "swaps", "depth", "gates", "lf_cost"]
     with open(out_path, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fieldnames)
         w.writeheader()
