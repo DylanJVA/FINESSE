@@ -84,7 +84,7 @@ def _vf2_initial_cur(qc, coupling_map, n_phys, seed, fidelity_matrix=None):
                 emap[(i, j)] = float(1.0 - fidelity_matrix[i, j])
             passes.append(_SetVF2ErrorMap(ErrorMap.from_dict(emap)))
         passes.append(VF2Layout(coupling_map, seed=seed, call_limit=10**8,
-                                time_limit=10.0, max_trials=100))
+                                time_limit=3.0, max_trials=100))
         pm = PassManager(passes)
         pm.run(qc)
         layout = pm.property_set.get('layout')

@@ -24,6 +24,7 @@ Usage:
 import argparse
 import csv
 import math
+import multiprocessing as mp
 import os
 import warnings
 from concurrent.futures import ProcessPoolExecutor
@@ -44,14 +45,11 @@ N_HEURISTIC = 3 # dense/identity/reversed layouts always added (like SABRE's), s
 # (finesse_transpile appends inf, so n_beta = len+1). Tuned to ~600 (SABRE's real
 # budget: 598 SNAIL / 624 IBM).
 CANDIDATES = {
-    #  id       staged  random  betas (finite; +inf)                    swap    total  budget
-    'G1':  dict(staged=False, n_seeds=27, betas=[0,10,100],                   swap_trials=3),  # 30  540
-    'G2':  dict(staged=False, n_seeds=17, betas=[0,10,100],                   swap_trials=6),  # 20  600
-    'S1':  dict(staged=True,  n_seeds=27, betas=[0,1,10,50,200],              swap_trials=6),  # 30  510
-    'S2':  dict(staged=True,  n_seeds=23, betas=[0,0.3,1,3,10,30,100,300,1000], swap_trials=9),# 26  624
-    'S3':  dict(staged=True,  n_seeds=37, betas=[0,1,10,50,200],              swap_trials=4),  # 40  600
-    'S4':  dict(staged=True,  n_seeds=47, betas=[0,1,10,100],                 swap_trials=2),  # 50  600
-    'NOB': dict(staged=False, n_seeds=17, betas=[],                           swap_trials=24), # 20  600
+    #  id       staged  random  betas (finite; +inf)              swap    total  budget
+    'S4':  dict(staged=True,  n_seeds=47, betas=[0,1,10,100],         swap_trials=2),  # 50  600  seed-heavy staged
+    'S3':  dict(staged=True,  n_seeds=37, betas=[0,1,10,50,200],      swap_trials=4),  # 40  600  staged runner-up
+    'G1':  dict(staged=False, n_seeds=27, betas=[0,10,100],           swap_trials=3),  # 30  540  seed-heavy grid
+    'G2':  dict(staged=False, n_seeds=17, betas=[0,10,100],           swap_trials=6),  # 20  600  swap-heavy grid
 }
 SEED = 0
 
@@ -146,7 +144,12 @@ def main():
         w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader()
         n = 0
+        # 'spawn' (not the Linux default 'fork'): DenseLayout/VF2Layout use
+        # rustworkx's rayon thread pool, which deadlocks in fork()ed children if
+        # the parent already initialized it (build_topology does). spawn gives
+        # each worker a clean interpreter, avoiding the hang.
         with ProcessPoolExecutor(max_workers=args.jobs,
+                                 mp_context=mp.get_context("spawn"),
                                  initializer=_init, initargs=(tag,)) as pool:
             for rows in pool.map(_work, items):
                 for row in rows:
