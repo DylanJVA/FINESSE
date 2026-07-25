@@ -13,9 +13,9 @@ Output: Results/beta_sweep_<tag>.csv with columns
 (beta = 'inf' for the pure-fidelity trial). The Qiskit SABRE baseline for the
 same circuits is in Results/qiskit_sabre_<tag>.csv.
 
-Usage:
-    python3 finesse_beta_sweep.py --jobs 24            # SNAIL
-    python3 finesse_beta_sweep.py --ibm --jobs 24      # IBM fake_brisbane
+Usage (beta-sensitivity: 100 warmed layouts per beta, swap_trials=1):
+    python3 finesse_beta_sweep.py --seeds 100 --jobs 24         # SNAIL
+    python3 finesse_beta_sweep.py --ibm --seeds 100 --jobs 24   # IBM fake_brisbane
 """
 import argparse
 import csv
@@ -34,17 +34,20 @@ CIRCUITS = ['seca_n11', 'qft_n10', 'multiplier_n15', 'bv_n19', 'qft_n24', 'squar
 # Sensitivity figure needs a DENSE beta grid (the deployed default is coarse).
 DENSE_BETAS = [0, 0.1, 0.2, 0.3, 0.5, 1, 2, 3, 5, 7,
                10, 20, 30, 50, 100, 150, 200, 300, 500, 1000]
-# More seeds than deployed for a smooth mean(beta). n_traversals=2 as deployed.
-N_SEEDS = 8
+# Seeds = warmed layouts. Downstream we take the BEST (min lf) over them at each
+# beta, so use ~ the deployed layout budget for min-over-seeds to match deployment.
 N_TRAVERSALS = 2
 SEED = 0
 
 _DEVS = None
 _CIRCS = None
+_NSEEDS = 8      # set per-run via --seeds (passed into workers by _init)
+_SWAP = 1
 
 
-def _init(tag):
-    global _DEVS, _CIRCS
+def _init(tag, n_seeds, swap_trials):
+    global _DEVS, _CIRCS, _NSEEDS, _SWAP
+    _NSEEDS, _SWAP = n_seeds, swap_trials
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         _DEVS = (build_ibm_topologies() if tag == "ibm"
@@ -60,9 +63,11 @@ def _work(item):
         warnings.simplefilter("ignore")
         # use_vf2=False: sensitivity is about routing vs beta; VF2 is a fixed
         # layout that would mask the beta dependence on embeddable circuits.
+        # swap_trials=1: the curve should show the beta dependence, not the
+        # best-of-many routing luck that swap_trials introduces.
         _, _, curve = finesse_transpile(
             qc, cm, F, basis_gate=basis_gate, betas=DENSE_BETAS,
-            n_seeds=N_SEEDS, n_traversals=N_TRAVERSALS, seed=SEED,
+            n_seeds=_NSEEDS, n_traversals=N_TRAVERSALS, swap_trials=_SWAP, seed=SEED,
             parallel=False, use_vf2=False, consolidate=True, return_curve=True,
         )
     # one row per (beta, seed): curve is [(beta, [lf per warmed seed])]
@@ -79,6 +84,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ibm", action="store_true")
     ap.add_argument("--jobs", type=int, default=os.cpu_count())
+    ap.add_argument("--seeds", type=int, default=100,
+                    help="warmed layouts per beta; the sensitivity distribution is over these")
+    ap.add_argument("--swap-trials", type=int, default=1,
+                    help="no effect for beta>0 (fidelity routing rarely ties); keep at 1")
     args = ap.parse_args()
 
     tag  = "ibm" if args.ibm else "snail"
@@ -97,8 +106,8 @@ def main():
     with open(out_path, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=["device", "circuit", "beta", "seed", "lf_cost"])
         w.writeheader()
-        with ProcessPoolExecutor(max_workers=args.jobs,
-                                 initializer=_init, initargs=(tag,)) as pool:
+        with ProcessPoolExecutor(max_workers=args.jobs, initializer=_init,
+                                 initargs=(tag, args.seeds, args.swap_trials)) as pool:
             for dev_name, circ_name, rows in pool.map(_work, items):
                 for r in rows:
                     w.writerow(r)
