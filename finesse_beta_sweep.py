@@ -44,11 +44,12 @@ _DEVS = None
 _CIRCS = None
 _NSEEDS = 8      # set per-run via --seeds (passed into workers by _init)
 _SWAP = 1
+_BETAS = DENSE_BETAS   # overridable via --betas (e.g. run only inf), passed by _init
 
 
-def _init(tag, n_seeds, swap_trials):
-    global _DEVS, _CIRCS, _NSEEDS, _SWAP
-    _NSEEDS, _SWAP = n_seeds, swap_trials
+def _init(tag, n_seeds, swap_trials, betas):
+    global _DEVS, _CIRCS, _NSEEDS, _SWAP, _BETAS
+    _NSEEDS, _SWAP, _BETAS = n_seeds, swap_trials, betas
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         _DEVS = (build_ibm_topologies() if tag == "ibm"
@@ -67,7 +68,7 @@ def _work(item):
         # swap_trials=1: the curve should show the beta dependence, not the
         # best-of-many routing luck that swap_trials introduces.
         _, _, curve = finesse_transpile(
-            qc, cm, F, basis_gate=basis_gate, betas=DENSE_BETAS,
+            qc, cm, F, basis_gate=basis_gate, betas=_BETAS,
             n_seeds=_NSEEDS, n_traversals=N_TRAVERSALS, swap_trials=_SWAP, seed=SEED,
             parallel=False, use_vf2=False, consolidate=True, return_curve=True,
         )
@@ -89,6 +90,11 @@ def main():
                     help="warmed layouts per beta; the sensitivity distribution is over these")
     ap.add_argument("--swap-trials", type=int, default=1,
                     help="no effect for beta>0 (fidelity routing rarely ties); keep at 1")
+    ap.add_argument("--betas", default=None,
+                    help="comma-separated betas to run instead of the dense grid; 'inf' allowed")
+    ap.add_argument("--out", default=None,
+                    help="output CSV (default Results/beta_sweep_<tag>.csv); use a separate "
+                         "file for extra betas, then merge")
     args = ap.parse_args()
 
     tag  = "ibm" if args.ibm else "snail"
@@ -102,8 +108,11 @@ def main():
                 items.append((di, name))
     print(f"{len(items)} work items, {args.jobs} jobs, tag={tag}")
 
+    betas = (DENSE_BETAS if args.betas is None else
+             [float('inf') if b.strip().lower() in ('inf', '∞') else float(b)
+              for b in args.betas.split(',')])
     os.makedirs("Results", exist_ok=True)
-    out_path = f"Results/beta_sweep_{tag}.csv"
+    out_path = args.out or f"Results/beta_sweep_{tag}.csv"
     with open(out_path, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=["device", "circuit", "beta", "seed", "lf_cost"])
         w.writeheader(); f.flush()
@@ -114,7 +123,7 @@ def main():
         with ProcessPoolExecutor(max_workers=args.jobs,
                                  mp_context=mp.get_context("spawn"),
                                  initializer=_init,
-                                 initargs=(tag, args.seeds, args.swap_trials)) as pool:
+                                 initargs=(tag, args.seeds, args.swap_trials, betas)) as pool:
             futs = {pool.submit(_work, it): it for it in items}
             for i, fut in enumerate(as_completed(futs), 1):
                 dev_name, circ_name, rows = fut.result()
