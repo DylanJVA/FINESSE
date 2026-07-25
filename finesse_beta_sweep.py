@@ -22,7 +22,8 @@ import csv
 import math
 import os
 import warnings
-from concurrent.futures import ProcessPoolExecutor
+import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from FrequencyAllocationRuns import (
     build_paper_circuits, build_topology, build_ibm_topologies,
@@ -105,16 +106,24 @@ def main():
     out_path = f"Results/beta_sweep_{tag}.csv"
     with open(out_path, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=["device", "circuit", "beta", "seed", "lf_cost"])
-        w.writeheader()
-        with ProcessPoolExecutor(max_workers=args.jobs, initializer=_init,
+        w.writeheader(); f.flush()
+        # spawn (not fork): finesse_transpile's rustworkx/rayon thread pool
+        # deadlocks in fork()ed workers (same fix as finesse_ablation.py).
+        # as_completed: write/print each circuit the moment it finishes, so one
+        # slow circuit can't hide progress and the run stays monitorable.
+        with ProcessPoolExecutor(max_workers=args.jobs,
+                                 mp_context=mp.get_context("spawn"),
+                                 initializer=_init,
                                  initargs=(tag, args.seeds, args.swap_trials)) as pool:
-            for dev_name, circ_name, rows in pool.map(_work, items):
+            futs = {pool.submit(_work, it): it for it in items}
+            for i, fut in enumerate(as_completed(futs), 1):
+                dev_name, circ_name, rows = fut.result()
                 for r in rows:
                     w.writerow(r)
                 f.flush()
                 best = min(r['lf_cost'] for r in rows)
-                print(f"  {dev_name:18s} {circ_name:18s} best lf={best:.3f} "
-                      f"({len(rows)} rows)")
+                print(f"  [{i}/{len(items)}] {dev_name:18s} {circ_name:18s} "
+                      f"best lf={best:.3f} ({len(rows)} rows)", flush=True)
     print(f"\nWrote {out_path}")
 
 
