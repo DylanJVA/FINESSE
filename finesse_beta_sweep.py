@@ -13,9 +13,14 @@ Output: Results/beta_sweep_<tag>.csv with columns
 (beta = 'inf' for the pure-fidelity trial). The Qiskit SABRE baseline for the
 same circuits is in Results/qiskit_sabre_<tag>.csv.
 
-Usage (beta-sensitivity: 100 warmed layouts per beta, swap_trials=1):
-    python3 finesse_beta_sweep.py --seeds 100 --jobs 24         # SNAIL
-    python3 finesse_beta_sweep.py --ibm --seeds 100 --jobs 24   # IBM fake_brisbane
+Usage -- matched to the deployed FINESSE layout budget (47 random + 3 heuristic
+= 50 warmed layouts, 6 warm-up traversals each):
+    python3 finesse_beta_sweep.py --seeds 47 --traversals 6 --jobs 24
+    python3 finesse_beta_sweep.py --ibm --seeds 47 --traversals 6 --jobs 24
+
+The pre-2026 sweeps used --traversals 2 (and --seeds 100 on SNAIL, 5 on IBM),
+so curves from those runs are NOT comparable to deployed-matched ones; re-run
+rather than append to them.
 """
 import argparse
 import csv
@@ -46,11 +51,12 @@ _CIRCS = None
 _NSEEDS = 8      # set per-run via --seeds (passed into workers by _init)
 _SWAP = 1
 _BETAS = DENSE_BETAS   # overridable via --betas (e.g. run only inf), passed by _init
+_TRAV = N_TRAVERSALS   # overridable via --traversals; 6 matches deployed FINESSE
 
 
-def _init(tag, n_seeds, swap_trials, betas):
-    global _DEVS, _CIRCS, _NSEEDS, _SWAP, _BETAS
-    _NSEEDS, _SWAP, _BETAS = n_seeds, swap_trials, betas
+def _init(tag, n_seeds, swap_trials, betas, traversals):
+    global _DEVS, _CIRCS, _NSEEDS, _SWAP, _BETAS, _TRAV
+    _NSEEDS, _SWAP, _BETAS, _TRAV = n_seeds, swap_trials, betas, traversals
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         _DEVS = (build_ibm_topologies() if tag == "ibm"
@@ -70,7 +76,7 @@ def _work(item):
         # best-of-many routing luck that swap_trials introduces.
         _, _, curve = finesse_transpile(
             qc, cm, F, basis_gate=basis_gate, betas=_BETAS,
-            n_seeds=_NSEEDS, n_traversals=N_TRAVERSALS, swap_trials=_SWAP, seed=SEED,
+            n_seeds=_NSEEDS, n_traversals=_TRAV, swap_trials=_SWAP, seed=SEED,
             parallel=False, use_vf2=False, consolidate=True, return_curve=True,
         )
     # one row per (beta, seed): curve is [(beta, [lf per warmed seed])]
@@ -103,6 +109,10 @@ def main():
                     help="append to the output CSV instead of overwriting it, and skip any "
                          "(device, circuit) pair already present. Use this to add circuits "
                          "without re-running the ones already swept.")
+    ap.add_argument("--traversals", type=int, default=N_TRAVERSALS,
+                    help="forward/backward warm-up passes per layout. Deployed FINESSE uses 6 "
+                         "(finesse_ablation.WARMUP); the historical sweeps used 2, so curves "
+                         "run at different values are not comparable.")
     ap.add_argument("--force", action="store_true",
                     help="with --append, re-run pairs already in the file (rows are appended, "
                          "so downstream must dedupe)")
@@ -151,7 +161,8 @@ def main():
                 skipped += 1
                 continue
             items.append((di, name))
-    print(f"{len(items)} work items, {args.jobs} jobs, tag={tag}"
+    print(f"{len(items)} work items, {args.jobs} jobs, tag={tag}, "
+          f"seeds={args.seeds} traversals={args.traversals}"
           + (f", {skipped} already in {out_path} (skipped)" if skipped else "")
           + (f", appending to {out_path}" if appending else ""))
     if not items:
@@ -172,7 +183,8 @@ def main():
         with ProcessPoolExecutor(max_workers=args.jobs,
                                  mp_context=mp.get_context("spawn"),
                                  initializer=_init,
-                                 initargs=(tag, args.seeds, args.swap_trials, betas)) as pool:
+                                 initargs=(tag, args.seeds, args.swap_trials, betas,
+                                           args.traversals)) as pool:
             futs = {pool.submit(_work, it): it for it in items}
             for i, fut in enumerate(as_completed(futs), 1):
                 dev_name, circ_name, rows = fut.result()
