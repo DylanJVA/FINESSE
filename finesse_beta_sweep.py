@@ -30,7 +30,8 @@ from FrequencyAllocationRuns import (
 )
 from finesse import finesse_transpile
 
-# ~6 circuits spanning sizes and routing demand.
+# ~6 circuits spanning sizes and routing demand. Override with --circuits; use
+# --circuits all for the whole paper suite.
 CIRCUITS = ['seca_n11', 'qft_n10', 'multiplier_n15', 'bv_n19', 'qft_n24', 'square_root_n18']
 # Sensitivity figure needs a DENSE beta grid (the deployed default is coarse).
 DENSE_BETAS = [0, 0.1, 0.2, 0.3, 0.5, 1, 2, 3, 5, 7,
@@ -95,27 +96,75 @@ def main():
     ap.add_argument("--out", default=None,
                     help="output CSV (default Results/beta_sweep_<tag>.csv); use a separate "
                          "file for extra betas, then merge")
+    ap.add_argument("--circuits", default=None,
+                    help="comma-separated circuit names to sweep instead of the default six; "
+                         "'all' runs every circuit in build_paper_circuits()")
+    ap.add_argument("--append", action="store_true",
+                    help="append to the output CSV instead of overwriting it, and skip any "
+                         "(device, circuit) pair already present. Use this to add circuits "
+                         "without re-running the ones already swept.")
+    ap.add_argument("--force", action="store_true",
+                    help="with --append, re-run pairs already in the file (rows are appended, "
+                         "so downstream must dedupe)")
     args = ap.parse_args()
 
     tag  = "ibm" if args.ibm else "snail"
     devs = build_ibm_topologies() if args.ibm else build_topology(wraparound=False)
 
-    items = []
+    if args.circuits is None:
+        wanted = set(CIRCUITS)
+    elif args.circuits.strip().lower() == 'all':
+        wanted = None                       # no filter
+    else:
+        wanted = {c.strip() for c in args.circuits.split(',')}
+
+    all_names = {n for n, _ in build_paper_circuits()}
+    if wanted is not None:
+        unknown = wanted - all_names
+        if unknown:
+            raise SystemExit(f"unknown circuit(s): {sorted(unknown)}\n"
+                             f"available: {sorted(all_names)}")
+
+    os.makedirs("Results", exist_ok=True)
+    out_path = args.out or f"Results/beta_sweep_{tag}.csv"
+    appending = args.append and os.path.exists(out_path) and os.path.getsize(out_path) > 0
+
+    # In append mode, don't redo pairs the file already holds. Keyed on
+    # (device, circuit) only -- if you are adding new BETAS to existing circuits
+    # rather than new circuits, write to a separate --out and merge, since this
+    # check cannot tell the two cases apart.
+    done = set()
+    if appending and not args.force:
+        with open(out_path, newline="") as f:
+            for r in csv.DictReader(f):
+                done.add((r["device"], r["circuit"]))
+
+    items, skipped = [], 0
     for di, (dev_name, cm, F, basis_gate) in enumerate(devs):
         n_phys = cm.size()
         for name, qc in build_paper_circuits():
-            if name in CIRCUITS and qc.num_qubits <= n_phys:
-                items.append((di, name))
-    print(f"{len(items)} work items, {args.jobs} jobs, tag={tag}")
+            if wanted is not None and name not in wanted:
+                continue
+            if qc.num_qubits > n_phys:
+                continue
+            if (dev_name, name) in done:
+                skipped += 1
+                continue
+            items.append((di, name))
+    print(f"{len(items)} work items, {args.jobs} jobs, tag={tag}"
+          + (f", {skipped} already in {out_path} (skipped)" if skipped else "")
+          + (f", appending to {out_path}" if appending else ""))
+    if not items:
+        print("nothing to do"); return
 
     betas = (DENSE_BETAS if args.betas is None else
              [float('inf') if b.strip().lower() in ('inf', '∞') else float(b)
               for b in args.betas.split(',')])
-    os.makedirs("Results", exist_ok=True)
-    out_path = args.out or f"Results/beta_sweep_{tag}.csv"
-    with open(out_path, "w", newline="") as f:
+    with open(out_path, "a" if appending else "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=["device", "circuit", "beta", "seed", "lf_cost"])
-        w.writeheader(); f.flush()
+        if not appending:
+            w.writeheader()
+        f.flush()
         # spawn (not fork): finesse_transpile's rustworkx/rayon thread pool
         # deadlocks in fork()ed workers (same fix as finesse_ablation.py).
         # as_completed: write/print each circuit the moment it finishes, so one
